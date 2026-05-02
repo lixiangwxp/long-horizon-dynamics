@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument('-s', '--shuffle',         type=bool,     default=False)
     parser.add_argument('-n', '--num_workers',     type=int,      default=4)
     parser.add_argument('--seed',                  type=int,      default=10)
-    parser.add_argument('--predictor_type',        type=str,      default='velocity')
+    parser.add_argument('--predictor_type',        type=str,      default='full_state', choices=['full_state'])
     parser.add_argument('--accelerator',           type=str,      default='auto', choices=['auto', 'cuda', 'mps', 'cpu'])
 
     # Optimizer
@@ -42,6 +42,10 @@ def parse_args():
     parser.add_argument('--adam_beta1',            type=float,    default=0.9)
     parser.add_argument('--adam_beta2',            type=float,    default=0.999)
     parser.add_argument('--adam_eps',              type=float,    default=1e-08)
+    parser.add_argument('--lambda_p',              type=float,    default=1.0)
+    parser.add_argument('--lambda_v',              type=float,    default=1.0)
+    parser.add_argument('--lambda_q',              type=float,    default=1.0)
+    parser.add_argument('--lambda_omega',          type=float,    default=1.0)
 
     # Logger 
     parser.add_argument('-p', '--plot',            type=bool,     default=False)
@@ -54,7 +58,7 @@ def parse_args():
     parser.add_argument('--unroll_length',         type=int,      default=2)
     parser.add_argument('--history_length',        type=int,      default=20)
     parser.add_argument('--delta',                 type=bool,     default=True)
-    parser.add_argument('--dataset',               type=str,      default='pi_tcn')         # pi_tcn, neurobem, neurobemfullstate
+    parser.add_argument('--dataset',               type=str,      default='neurobemfullstate', choices=['neurobemfullstate', 'pitcnfullstate'])
 
     return parser.parse_args()
 

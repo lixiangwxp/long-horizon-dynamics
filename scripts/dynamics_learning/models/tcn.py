@@ -45,6 +45,7 @@ class TCN(nn.Module):
         return x
     
 class TemporalConvNet(nn.Module):
+    """按层堆叠 TemporalBlock，通道数由 num_channels 逐层指定。"""
     def __init__(self, num_inputs, num_channels, kernel_size=2, dropout=0.0):
         super(TemporalConvNet, self).__init__()
         layers = []
@@ -61,6 +62,7 @@ class TemporalConvNet(nn.Module):
         self.network = nn.Sequential(*layers)
 
     def forward(self, x):
+        # 输入/输出都保持 [batch, channels, history]，便于多个时间卷积块串联。
         return self.network(x)
     
 
@@ -109,4 +111,5 @@ class Chomp1d(nn.Module):
         self.chomp_size = chomp_size
 
     def forward(self, x):
+        # Chomp 只裁掉时间维右侧 padding；前面的历史信息保持因果卷积语义。
         return x[:, :, :-self.chomp_size].contiguous()
