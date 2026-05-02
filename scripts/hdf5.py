@@ -15,11 +15,12 @@ CANONICAL_DT_SECONDS = 0.01
 CANONICAL_FEATURE_NAMES = [
     "p_W_x", "p_W_y", "p_W_z",
     "v_W_x", "v_W_y", "v_W_z",
-    "q_w", "q_x", "q_y", "q_z",
+    "q_WB_w", "q_WB_x", "q_WB_y", "q_WB_z",
     "omega_B_x", "omega_B_y", "omega_B_z",
     "a_x", "a_y", "a_z",
     "alpha_x", "alpha_y", "alpha_z",
     "u_1", "u_2", "u_3", "u_4",
+    "v_B_x", "v_B_y", "v_B_z",
     "dmot_1", "dmot_2", "dmot_3", "dmot_4",
     "vbat",
 ]
@@ -32,8 +33,9 @@ CANONICAL_FEATURE_SLICES = {
     "a": [13, 16],
     "alpha": [16, 19],
     "u": [19, 23],
-    "dmot": [23, 27],
-    "vbat": [27, 28],
+    "v_B": [23, 26],
+    "dmot": [26, 30],
+    "vbat": [30, 31],
 }
 
 def extract_data(data, dataset_name):
@@ -62,10 +64,32 @@ def normalize_and_resample_time(data):
     return data
 
 
+def quaternion_wxyz_to_rotation_matrix(q):
+    q = q / np.linalg.norm(q, axis=1, keepdims=True)
+    w = q[:, 0]
+    x = q[:, 1]
+    y = q[:, 2]
+    z = q[:, 3]
+
+    R = np.empty((q.shape[0], 3, 3), dtype=q.dtype)
+    R[:, 0, 0] = 1 - 2 * (y * y + z * z)
+    R[:, 0, 1] = 2 * (x * y - z * w)
+    R[:, 0, 2] = 2 * (x * z + y * w)
+    R[:, 1, 0] = 2 * (x * y + z * w)
+    R[:, 1, 1] = 1 - 2 * (x * x + z * z)
+    R[:, 1, 2] = 2 * (y * z - x * w)
+    R[:, 2, 0] = 2 * (x * z - y * w)
+    R[:, 2, 1] = 2 * (y * z + x * w)
+    R[:, 2, 2] = 1 - 2 * (x * x + y * y)
+    return R
+
+
 def extract_neurobem_full_state(data):
     p_W = data[['pos x', 'pos y', 'pos z']].values
-    v_W = data[['vel x', 'vel y', 'vel z']].values
     q = data[['quat w', 'quat x', 'quat y', 'quat z']].values
+    v_B = data[['vel x', 'vel y', 'vel z']].values
+    R_WB = quaternion_wxyz_to_rotation_matrix(q)
+    v_W = np.einsum('nij,nj->ni', R_WB, v_B)
     omega_B = data[['ang vel x', 'ang vel y', 'ang vel z']].values
     a = data[['acc x', 'acc y', 'acc z']].values
     alpha = data[['ang acc x', 'ang acc y', 'ang acc z']].values
@@ -73,7 +97,7 @@ def extract_neurobem_full_state(data):
     dmot = data[['dmot 1', 'dmot 2', 'dmot 3', 'dmot 4']].values * 0.001
     vbat = data[['vbat']].values
 
-    data_np = np.hstack((p_W, v_W, q, omega_B, a, alpha, u, dmot, vbat))
+    data_np = np.hstack((p_W, v_W, q, omega_B, a, alpha, u, v_B, dmot, vbat))
     return data_np.astype(DATA_DTYPE, copy=False)
 
 
@@ -113,7 +137,7 @@ def write_canonical_split_hdf5(source_split_path, output_split_path, hdf5_file):
     with h5py.File(hdf5_path, 'w') as hf:
         hf.attrs['dataset_name'] = CANONICAL_DATASET
         hf.attrs['source_dataset'] = SOURCE_DATASET_FOR_CANONICAL
-        hf.attrs['schema_version'] = 'v1'
+        hf.attrs['schema_version'] = 'v2'
         hf.attrs['dt_seconds'] = CANONICAL_DT_SECONDS
         hf.attrs['feature_names'] = json.dumps(CANONICAL_FEATURE_NAMES)
         hf.attrs['feature_slices'] = json.dumps(CANONICAL_FEATURE_SLICES)

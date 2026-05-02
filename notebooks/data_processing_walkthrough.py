@@ -15,7 +15,7 @@
 
 # ## 0. 导入依赖并定位仓库
 
-# In[16]:
+# In[25]:
 
 
 from pathlib import Path
@@ -73,7 +73,7 @@ print("canonical 数据集名:", CANONICAL_DATASET)
 # 
 # `neurobemfullstate` 的输入还是原始 NeuroBEM CSV，输出是新的 canonical HDF5。
 
-# In[17]:
+# In[26]:
 
 
 SOURCE_DATASET = "neurobem"
@@ -90,7 +90,7 @@ print("当前查看 split:", SPLIT_DIR)
 
 # ## 2. 读取一个原始 CSV
 
-# In[18]:
+# In[27]:
 
 
 csv_files = sorted(SPLIT_DIR.glob("*.csv"))
@@ -123,7 +123,7 @@ raw.columns
 # | `dmot` | `dmot 1/2/3/4` | 电机输入变化率，代码里乘 `0.001` |
 # | `vbat` | `vbat` | 电池电压相关读数 |
 
-# In[19]:
+# In[28]:
 
 
 column_summary = pd.DataFrame({
@@ -138,7 +138,7 @@ display(column_summary)
 # 
 # `scripts/hdf5.py` 里会先把 `t` 变成相对时间，再按 `0.01s` 重采样，也就是 100 Hz。
 
-# In[20]:
+# In[29]:
 
 
 resampled = normalize_and_resample_time(raw)
@@ -149,7 +149,7 @@ print("重采样间隔:", CANONICAL_DT_SECONDS, "秒")
 display(resampled.head())
 
 
-# In[21]:
+# In[30]:
 
 
 plot_column = "vel x"
@@ -169,7 +169,7 @@ ax.grid(True, alpha=0.3)
 
 # ## 5. 转成 28D canonical array
 
-# In[22]:
+# In[31]:
 
 
 canonical_data = extract_neurobem_full_state(resampled)
@@ -179,7 +179,7 @@ print("feature 数量:", len(CANONICAL_FEATURE_NAMES))
 display(pd.DataFrame(canonical_data[:5], columns=CANONICAL_FEATURE_NAMES))
 
 
-# In[23]:
+# In[32]:
 
 
 feature_schema = pd.DataFrame({
@@ -211,7 +211,7 @@ display(slice_schema)
 # - `trajectory_starts` / `trajectory_lengths`: 每条 trajectory 在 `data` 里的边界。
 # - `trajectories/<trajectory_name>/data`: 每条 trajectory 单独保存。
 
-# In[24]:
+# In[33]:
 
 
 tmp_root = Path(tempfile.mkdtemp(prefix="neurobemfullstate-demo-"))
@@ -244,7 +244,7 @@ with h5py.File(h5_path, "r") as hf:
 # - **训练 window**：HDF5 不保存固定的 `history_length` / `unroll_length`，后面的 PyTorch Dataset 训练时再从完整 trajectory 里动态切。
 # 
 
-# In[ ]:
+# In[34]:
 
 
 split_rows = []
@@ -262,10 +262,7 @@ display(pd.DataFrame(split_rows))
 
 
 # ### 动态切 history / future window
-# 
-# 截图里担心的是：如果 HDF5 直接存 `inputs: [num_samples, history_length, features]` 和 `outputs: [num_samples, unroll_length, features]`，那 `history_length` 或 `unroll_length` 一改，就得重新从 CSV 处理。
-# 
-# `neurobemfullstate` 这条新路径没有这个问题。它在 HDF5 里存的是完整 trajectory 的 28 列，后面训练时再按需要切：
+# `neurobemfullstate` 在 HDF5 里存的是完整 trajectory 的 28 列，后面训练时再按需要切：
 # 
 # - 13D state：`p_W + v_W + q + omega_B`
 # - 10D state：`v_W + q + omega_B`
@@ -273,17 +270,13 @@ display(pd.DataFrame(split_rows))
 # - context：`dmot + vbat`
 # 
 
-# In[ ]:
+# In[41]:
 
 
 with h5py.File(h5_path, "r") as hf:
     trajectory_name = json.loads(hf.attrs["trajectory_names"])[0]
     trajectory_data = hf["trajectories"][trajectory_name]["data"][:]
     feature_slices = json.loads(hf.attrs["feature_slices"])
-
-print("使用 trajectory:", trajectory_name)
-print("完整 trajectory shape:", trajectory_data.shape)
-
 p_W_slice = slice(*feature_slices["p_W"])
 v_W_slice = slice(*feature_slices["v_W"])
 q_slice = slice(*feature_slices["q"])
@@ -307,8 +300,8 @@ u = trajectory_data[:, u_slice]
 context = np.hstack((trajectory_data[:, dmot_slice], trajectory_data[:, vbat_slice]))
 
 start = 0
-H = 20
-F = 10
+H = 20  #history length
+F = 10  #future length
 
 x_hist_13 = state_13[start:start + H]
 y_future_13 = state_13[start + H:start + H + F]
@@ -336,7 +329,7 @@ shape_summary = pd.DataFrame({
         c_hist.shape,
     ],
 })
-display(shape_summary)
+display(shape_summary)#(时间步数量, 每个时间步有多少个数值特征)
 
 
 # ### 换 H / F 不需要重写 HDF5
@@ -344,7 +337,7 @@ display(shape_summary)
 # 下面还是用同一个 `trajectory_data`，只改 `H` 和 `F`。如果 shape 变了，就说明窗口是在训练前临时切的，不是写死在 HDF5 里的。
 # 
 
-# In[ ]:
+# In[42]:
 
 
 H2 = 50
