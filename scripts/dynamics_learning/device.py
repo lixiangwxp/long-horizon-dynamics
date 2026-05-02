@@ -26,7 +26,9 @@ def select_device(accelerator="auto", gpu_id=0, num_devices=1):
 
     if resolved == "cuda":
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is False.")
+            raise RuntimeError(
+                "CUDA was requested, but torch.cuda.is_available() is False."
+            )
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
         devices = num_devices if num_devices > 0 else 1
         return {
@@ -39,7 +41,9 @@ def select_device(accelerator="auto", gpu_id=0, num_devices=1):
 
     if resolved == "mps":
         if not mps_is_available():
-            raise RuntimeError("MPS was requested, but torch.backends.mps.is_available() is False.")
+            raise RuntimeError(
+                "MPS was requested, but torch.backends.mps.is_available() is False."
+            )
         return {
             "resolved": "mps",
             "device": torch.device("mps"),
