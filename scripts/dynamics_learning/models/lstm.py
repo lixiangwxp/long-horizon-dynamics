@@ -19,6 +19,8 @@ class LSTM(nn.Module):
     # decoder_input 是传给 MLP 的“单个时间步/状态”的特征宽度；MLP 内部还会乘 history_len 后展平。
     if encoder_output == 'hidden':
       decoder_input = 2 * (encoder_sizes[0] / history_len)
+      #让MLP的输入维度与encoder输出的特征维度匹配。 MLP 会自动乘以 history_len 来展平时间维。
+      #2 * (H / T) * T= 2H
     elif encoder_output == 'output':
       decoder_input = encoder_sizes[0] / history_len
     else:
@@ -40,15 +42,16 @@ class LSTM(nn.Module):
     self.memory = h
     # x_encoder = torch.cat([h[0][-1], h[1][-1]], dim=1) if self.encoder_output == 'hidden' else x[:, -1, :]
     if self.encoder_output == 'hidden':
+      #LSTM 的 h 是(h_n, c_n)，h_n.shape = [num_layers, B, H]，c_n.shape = [num_layers, B, H]
       # 使用最后一层 hidden state 与 cell state 拼接，形状近似 [batch, 2 * hidden_size]。
       x_encoder = torch.cat([h[0][-1], h[1][-1]], dim=1)
 
     elif self.encoder_output == 'output':
-      # 只取最后一个时间步的 LSTM 输出，形状 [batch, hidden_size]。
-      x_encoder = x[:, -1, :]
+      # 只取最后一个时间步的 LSTM 输出，形状 [batch, hidden_size]。[B, T, H]
+      x_encoder = x[:, -1, :]#[B, H]
 
     else:
-      # 保留完整时间序列输出，形状 [batch, history_len, hidden_size]，交给 MLP 展平。
+      # 保留完整时间序列输出，形状 [batch, history_len, hidden_size]，交给 MLP 展平。[B, T, H]
       x_encoder = x
 
     x_encoder = self.dropout(x_encoder)

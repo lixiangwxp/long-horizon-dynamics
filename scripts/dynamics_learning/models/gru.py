@@ -53,7 +53,6 @@ class GRU(nn.Module):
       x_encoder = x
       
     x_encoder = self.dropout(x_encoder)
-
     x = self.decoder(x_encoder)
     
     return x

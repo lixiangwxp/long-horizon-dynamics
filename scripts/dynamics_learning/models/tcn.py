@@ -26,7 +26,7 @@ class TCN(nn.Module):
     """
     def __init__(self, input_size, encoder_sizes, history_len, decoder_sizes, output_size, kernel_size, dropout, **kwargs):
         super(TCN, self).__init__()
-        
+
         # encoder 用一串时间卷积块提取历史序列里的时间特征。
         self.encoder = TemporalConvNet(input_size, encoder_sizes, kernel_size=kernel_size, dropout=dropout)
         # decoder 接收最后一个时间点的 encoder 特征，再映射成最终预测值。
@@ -68,7 +68,9 @@ class TemporalConvNet(nn.Module):
 
 #----------------------------------------------------------------------------
 class TemporalBlock(nn.Module):
-    """一个 TCN 残差块：两层 dilated Conv1d + 激活 + dropout + residual。"""
+    """一个 TCN 残差块：两层 dilated Conv1d + 激活 + dropout + residual。
+       TCN 的最后一个 temporal feature 被当成“历史摘要”，再送给 MLP 输出下一步预测。
+    """
     def __init__(self, in_channels, out_channels, kernel_size, stride, dilation, padding, dropout=0):
         super(TemporalBlock, self).__init__()
         # 第一层扩张卷积：在时间维上看一段历史窗口。
