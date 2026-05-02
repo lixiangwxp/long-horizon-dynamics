@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader, Dataset
 
 
 STATE_GROUPS = ("p_W", "v_W", "q", "omega_B")
+CONTEXT_GROUPS = ("v_B", "a", "alpha", "dmot", "vbat")
 
 
 class DynamicsDataset(Dataset):
@@ -16,6 +17,7 @@ class DynamicsDataset(Dataset):
         self.unroll_length = args.unroll_length
         self.batch_size = args.batch_size
         self.model_type = args.model_type
+        self.schema_mode = "full_state_trajectory"
 
         self.hdf5_path = os.path.join(data_path, hdf5_file)
         self._load_trajectory_hdf5()
@@ -79,7 +81,19 @@ class DynamicsDataset(Dataset):
                 np.float32, copy=False
             )
         else:
-            self.context = np.empty((data.shape[0], 0), dtype=np.float32)
+            context_parts = []
+            for group_name in CONTEXT_GROUPS:
+                if group_name not in self.feature_slices:
+                    continue
+                start, end = self.feature_slices[group_name]
+                context_parts.append(data[:, start:end])
+
+            if context_parts:
+                self.context = np.concatenate(context_parts, axis=1).astype(
+                    np.float32, copy=False
+                )
+            else:
+                self.context = np.empty((data.shape[0], 0), dtype=np.float32)
 
         self.trajectory_starts = trajectory_starts
         self.trajectory_lengths = trajectory_lengths

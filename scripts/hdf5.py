@@ -43,6 +43,13 @@ FULL_STATE_FEATURE_NAMES = [
     "u_4",
 ]
 
+PITCN_POSITION_ERROR = (
+    "PI-TCN full-state requires position columns p_x,p_y,p_z. "
+    "The current CSV seems to be the old derivative-learning export. "
+    "Please regenerate PI-TCN CSV from raw bags before appendHistory, "
+    "keeping p,q,v,w,u per trajectory."
+)
+
 NEUROBEM_FEATURE_SLICES = {
     **FULL_STATE_FEATURE_SLICES,
     "v_B": [17, 20],
@@ -167,6 +174,23 @@ def require_columns(data, required_columns, file_path):
         raise ValueError(f"{file_path} is missing required columns: {missing_columns}")
 
 
+def require_pitcn_columns(data, required_columns, group_name, file_path):
+    missing_columns = [
+        column for column in required_columns if column not in data.columns
+    ]
+    if missing_columns:
+        if group_name == "position":
+            raise ValueError(
+                f"{PITCN_POSITION_ERROR} Source file: {file_path}. "
+                f"Missing columns: {missing_columns}"
+            )
+        raise ValueError(
+            "PI-TCN full-state requires "
+            f"{group_name} columns {','.join(required_columns)}. "
+            f"Source file: {file_path}. Missing columns: {missing_columns}"
+        )
+
+
 def check_finite(data_np, dataset_name, source_file, feature_slices, feature_names):
     finite_mask = np.isfinite(data_np)
     if finite_mask.all():
@@ -241,36 +265,56 @@ def extract_neurobem_full_state(data):
     return data_np.astype(DATA_DTYPE, copy=False)
 
 
-def extract_pitcn_full_state(data):
-    required_columns = [
-        "p_x",
-        "p_y",
-        "p_z",
-        "v_x",
-        "v_y",
-        "v_z",
-        "q_w",
-        "q_x",
-        "q_y",
-        "q_z",
-        "w_x",
-        "w_y",
-        "w_z",
-        "u_0",
-        "u_1",
-        "u_2",
-        "u_3",
-    ]
-    require_columns(data, required_columns, "pi_tcn csv")
+def extract_pitcn_full_state(data, csv_file_path):
+    position_columns = ["p_x", "p_y", "p_z"]
+    velocity_columns = ["v_x", "v_y", "v_z"]
+    quaternion_columns = ["q_w", "q_x", "q_y", "q_z"]
+    angular_velocity_columns = ["w_x", "w_y", "w_z"]
+    motor_speed_columns = ["u_0", "u_1", "u_2", "u_3"]
+    motor_thrust_columns = ["f_0", "f_1", "f_2", "f_3"]
 
-    p_W = data[["p_x", "p_y", "p_z"]].values
-    v_W = data[["v_x", "v_y", "v_z"]].values
-    q = prepare_quaternion_wxyz(data[["q_w", "q_x", "q_y", "q_z"]].values)
-    omega_B = data[["w_x", "w_y", "w_z"]].values
-    u = data[["u_0", "u_1", "u_2", "u_3"]].values * 0.001
+    require_pitcn_columns(data, position_columns, "position", csv_file_path)
+    require_pitcn_columns(data, velocity_columns, "velocity", csv_file_path)
+    require_pitcn_columns(data, quaternion_columns, "quaternion", csv_file_path)
+    require_pitcn_columns(
+        data, angular_velocity_columns, "angular velocity", csv_file_path
+    )
+
+    p_W = data[position_columns].values
+    v_W = data[velocity_columns].values
+    q = prepare_quaternion_wxyz(data[quaternion_columns].values)
+    omega_B = data[angular_velocity_columns].values
+
+    if all(column in data.columns for column in motor_speed_columns):
+        u = data[motor_speed_columns].values * 0.001
+        control_metadata = {
+            "control_kind": "motor_speed",
+            "raw_control_unit": "rad/s",
+            "control_scale": 0.001,
+        }
+    elif all(column in data.columns for column in motor_thrust_columns):
+        u = data[motor_thrust_columns].values
+        control_metadata = {
+            "control_kind": "motor_thrust",
+            "raw_control_unit": "N",
+            "control_scale": 1.0,
+        }
+    else:
+        missing_speed = [
+            column for column in motor_speed_columns if column not in data.columns
+        ]
+        missing_thrust = [
+            column for column in motor_thrust_columns if column not in data.columns
+        ]
+        raise ValueError(
+            "PI-TCN full-state requires u_0..u_3 or f_0..f_3. "
+            f"Source file: {csv_file_path}. "
+            f"Missing motor_speed columns: {missing_speed}; "
+            f"missing motor_thrust columns: {missing_thrust}"
+        )
 
     data_np = np.hstack((p_W, v_W, q, omega_B, u))
-    return data_np.astype(DATA_DTYPE, copy=False)
+    return data_np.astype(DATA_DTYPE, copy=False), control_metadata
 
 
 def extract_nanodrone_full_state(data):
@@ -312,11 +356,11 @@ def csv_to_canonical_trajectory(csv_file_path, dataset_name):
         data = normalize_and_resample_time(data)
 
     if dataset_name == "neurobemfullstate":
-        return extract_neurobem_full_state(data)
+        return extract_neurobem_full_state(data), {}
     if dataset_name == "pitcnfullstate":
-        return extract_pitcn_full_state(data)
+        return extract_pitcn_full_state(data, csv_file_path)
     if dataset_name == "nanodronefullstate":
-        return extract_nanodrone_full_state(data)
+        return extract_nanodrone_full_state(data), {}
 
     raise ValueError(f"Unsupported full-state dataset: {dataset_name}")
 
@@ -344,9 +388,20 @@ def write_canonical_hdf5(
     used_names = set()
     feature_slices = metadata["feature_slices"]
     feature_names = metadata["feature_names"]
+    metadata_overrides = {}
 
     for csv_file_path in tqdm(csv_files):
-        data_np = csv_to_canonical_trajectory(csv_file_path, dataset_name)
+        data_np, overrides = csv_to_canonical_trajectory(csv_file_path, dataset_name)
+        for key, value in overrides.items():
+            if key in metadata_overrides and metadata_overrides[key] != value:
+                raise ValueError(
+                    f"Inconsistent {key} values for {dataset_name}: "
+                    f"{metadata_overrides[key]} vs {value}. "
+                    "Do not mix PI-TCN motor speed and thrust control files "
+                    "within the same split."
+                )
+            metadata_overrides[key] = value
+
         check_finite(
             data_np, dataset_name, str(csv_file_path), feature_slices, feature_names
         )
@@ -363,24 +418,28 @@ def write_canonical_hdf5(
     all_data = np.concatenate(trajectories, axis=0).astype(DATA_DTYPE, copy=False)
     trajectory_starts = np.cumsum([0] + trajectory_lengths[:-1]).astype(np.int64)
     trajectory_lengths = np.asarray(trajectory_lengths, dtype=np.int64)
+    split_metadata = dict(metadata)
+    split_metadata.update(metadata_overrides)
 
     hdf5_path = os.path.join(output_split_path, hdf5_file)
     with h5py.File(hdf5_path, "w") as hf:
         hf.attrs["dataset_name"] = dataset_name
-        hf.attrs["source_dataset"] = metadata["source_dataset"]
+        hf.attrs["source_dataset"] = split_metadata["source_dataset"]
         hf.attrs["schema_version"] = FULL_STATE_SCHEMA_VERSION
         hf.attrs["dt_seconds"] = DT_SECONDS
         hf.attrs["feature_names"] = json.dumps(feature_names)
         hf.attrs["feature_slices"] = json.dumps(feature_slices)
         hf.attrs["trajectory_names"] = json.dumps(trajectory_names)
         hf.attrs["source_files"] = json.dumps(source_files)
-        hf.attrs["control_kind"] = metadata["control_kind"]
-        hf.attrs["raw_control_unit"] = metadata["raw_control_unit"]
-        hf.attrs["control_scale"] = metadata["control_scale"]
+        hf.attrs["control_kind"] = split_metadata["control_kind"]
+        hf.attrs["raw_control_unit"] = split_metadata["raw_control_unit"]
+        hf.attrs["control_scale"] = split_metadata["control_scale"]
         hf.attrs["quaternion_order"] = "wxyz"
-        hf.attrs["raw_quaternion_order"] = metadata["raw_quaternion_order"]
-        hf.attrs["canonical_velocity_frame"] = metadata["canonical_velocity_frame"]
-        hf.attrs["angular_velocity_frame"] = metadata["angular_velocity_frame"]
+        hf.attrs["raw_quaternion_order"] = split_metadata["raw_quaternion_order"]
+        hf.attrs["canonical_velocity_frame"] = split_metadata[
+            "canonical_velocity_frame"
+        ]
+        hf.attrs["angular_velocity_frame"] = split_metadata["angular_velocity_frame"]
 
         data_dataset = hf.create_dataset("data", data=all_data)
         data_dataset.dims[0].label = "time_steps"

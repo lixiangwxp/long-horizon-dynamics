@@ -28,8 +28,26 @@ def parse_eval_horizons(value):
 def quat_geodesic_error(q_pred, q_true):
     q_pred = q_pred / q_pred.norm(dim=-1, keepdim=True).clamp_min(1e-12)
     q_true = q_true / q_true.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-    dot = torch.sum(q_pred * q_true, dim=-1).abs().clamp(-1.0, 1.0)
-    return 2.0 * torch.arccos(dot)
+    q_true_inv = torch.cat([q_true[..., :1], -q_true[..., 1:]], dim=-1)
+    q_rel = quat_multiply(q_true_inv, q_pred)
+    q_rel = q_rel / q_rel.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    vec_norm = torch.linalg.norm(q_rel[..., 1:], dim=-1)
+    scalar = q_rel[..., 0].abs()
+    return 2.0 * torch.atan2(vec_norm, scalar.clamp_min(1e-12))
+
+
+def quat_multiply(q1, q2):
+    w1, x1, y1, z1 = q1.unbind(dim=-1)
+    w2, x2, y2, z2 = q2.unbind(dim=-1)
+    return torch.stack(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ],
+        dim=-1,
+    )
 
 
 def compute_horizon_metrics(pred_future, y_future):
@@ -143,15 +161,9 @@ def find_latest_experiment(resources_path, requested_args):
     ]
     if matching:
         return matching[0]
-    with_checkpoints = [
-        experiment_path
-        for experiment_path in experiments
-        if glob.glob(os.path.join(experiment_path, "checkpoints", "*.pth"))
-    ]
-    if with_checkpoints:
-        return with_checkpoints[0]
     raise FileNotFoundError(
-        "No experiments with checkpoints found under resources/experiments/."
+        "No matching experiment with checkpoints found for "
+        f"dataset={requested_args.dataset}. Train a matching model first."
     )
 
 

@@ -8,6 +8,7 @@ class LSTM(nn.Module):
 
   输入 x 通常为 [batch, history_len, input_size]。LSTM 先沿时间维编码历史，
   再根据 encoder_output 选择隐藏状态、最后时间步输出或完整序列交给 MLP 解码。
+  输出是一步预测的 delta，形状通常为 [batch, output_size]。
   """
   def __init__(self, input_size, encoder_sizes, num_layers, history_len, decoder_sizes, output_size, dropout,
                encoder_output, **kwargs):
@@ -35,9 +36,14 @@ class LSTM(nn.Module):
 
   def forward(self, x, init_memory):
     """根据 init_memory 决定重置记忆或复用上一批的 LSTM 状态。"""
+    # h 是 LSTM 初始状态 (h_0, c_0)，每个张量形状都是 [num_layers, B, hidden_size]。
     h = self.init_memory(x.shape[0], x.device) if init_memory else self.memory
+    # x 是所有时间步的 LSTM 输出，形状 [B, history_len, hidden_size]。
     x, _ = self.encoder(x, h)
     #PyTorch 的 nn.LSTM 返回的是：output, (h_n, c_n) = lstm(input, (h_0, c_0))
+    #h_n.shape == [num_layers, batch_size, hidden_size]
+    #h_n: 最后时间步的 hidden state，偏向“当前输出/短期状态”。
+    #c_n: 最后时间步的 cell state，偏向“长期记忆状态”
     #但这里写成了 x, _ = ...，把更新后的 (h_n, c_n) 丢掉了。然后 self.memory = h 存回去的是输入进去的旧状态，不是 LSTM 跑完后的新状态。
     self.memory = h
     # x_encoder = torch.cat([h[0][-1], h[1][-1]], dim=1) if self.encoder_output == 'hidden' else x[:, -1, :]
@@ -55,6 +61,7 @@ class LSTM(nn.Module):
       x_encoder = x
 
     x_encoder = self.dropout(x_encoder)
+    # MLP 把选出的 LSTM 表示映射成一步预测 delta。
     x = self.decoder(x_encoder)
     return x
 

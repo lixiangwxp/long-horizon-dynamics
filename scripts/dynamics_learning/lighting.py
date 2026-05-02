@@ -116,8 +116,12 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
     def orientation_error(self, q_pred, q_true):
         q_pred = self.quat_normalize(q_pred)
         q_true = self.quat_normalize(q_true)
-        dot = torch.sum(q_pred * q_true, dim=-1).abs().clamp(0.0, 1.0 - 1e-7)
-        return 2.0 * torch.arccos(dot)
+        q_true_inv = torch.cat([q_true[..., :1], -q_true[..., 1:]], dim=-1)
+        q_rel = self.quat_multiply(q_true_inv, q_pred)
+        q_rel = self.quat_normalize(q_rel)
+        vec_norm = torch.linalg.norm(q_rel[..., 1:], dim=-1)
+        scalar = q_rel[..., 0].abs()
+        return 2.0 * torch.atan2(vec_norm, scalar.clamp_min(1e-12))
 
     def apply_full_state_update(self, x_t, delta):
         delta_p = delta[:, 0:3]
@@ -131,7 +135,7 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
 
         # dtheta is a local/body-frame rotation increment.
         # q is q_WB in wxyz order.
-        # Therefore q_next = q_t otimes Exp(dtheta).
+        # Therefore q_next = q_t ⊗ Exp(dtheta).
         q_next = self.quat_multiply(q_t, self.exp_quat(dtheta))
         q_next = self.quat_normalize(q_next)
 
