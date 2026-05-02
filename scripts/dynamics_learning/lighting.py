@@ -213,7 +213,8 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
 
     def on_train_epoch_end(self):
         self.verbose = False
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def on_validation_epoch_start(self):
         pass

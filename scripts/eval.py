@@ -7,6 +7,8 @@ from dynamics_learning.data import load_dataset
 import pytorch_lightning
 from dynamics_learning.lighting import DynamicsLearning
 from config import load_args
+from dynamics_learning.device import select_device
+from dynamics_learning.wandb_utils import log_experiment_artifact
 
 import sys
 import time
@@ -20,8 +22,19 @@ warnings.filterwarnings('ignore')
 
 def main(args, hdf5_files, model_path):
 
-    # WandB Logging
-    wandb_logger = pytorch_lightning.loggers.WandbLogger(name="wandb_logger", project="dynamics_learning", save_dir=experiment_path) 
+    device_config = select_device(args.accelerator, args.gpu_id, args.num_devices)
+    args.device = str(device_config["device"])
+    args.resolved_accelerator = device_config["resolved"]
+    print("Testing model on", args.device, "\n")
+
+    # Logging
+    wandb_logger = pytorch_lightning.loggers.WandbLogger(
+        name="wandb_logger",
+        project="dynamics_learning",
+        save_dir=experiment_path,
+    ) 
+    csv_logger = pytorch_lightning.loggers.CSVLogger(save_dir=experiment_path, name="csv_logs")
+    loggers = [wandb_logger, csv_logger]
     
     # Load datasets from hdf5 files and return a dictionary of dataloaders
     test_dataloaders = [load_dataset("test", data_path, hdf5_file, args, 0, False)[1] for hdf5_file in hdf5_files]
@@ -50,16 +63,31 @@ def main(args, hdf5_files, model_path):
     )
 
     # Load the model
-    checkpoint = torch.load(model_path)
+    try:
+        checkpoint = torch.load(model_path, map_location=device_config["device"], weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(model_path, map_location=device_config["device"])
     model.load_state_dict(checkpoint['state_dict'])
 
     trainer = pytorch_lightning.Trainer(
-        logger=wandb_logger,
+        accelerator=device_config["lightning_accelerator"],
+        devices=device_config["devices"],
+        logger=loggers,
         max_epochs=0,
     )
 
     # Test model on different trajectories and display trajectory names in the logs
     trainer.test(model, test_dataloaders, verbose=True)
+    if trainer.is_global_zero:
+        wandb_logger.experiment.config.update(vars(args))
+        wandb_logger.experiment.config.update({"evaluated_checkpoint": model_path})
+        log_experiment_artifact(
+            wandb_logger,
+            experiment_path,
+            artifact_prefix=f"eval-{args.dataset}-{args.model_type}",
+            include_checkpoints=False,
+            extra_files=[model_path],
+        )
 
     print(dataloaders.keys())
 
@@ -68,6 +96,7 @@ def main(args, hdf5_files, model_path):
 if __name__ == "__main__":
     # parse arguments
     args = parse_args()
+    requested_accelerator = args.accelerator
 
     # Asser model type
     assert args.model_type in ["mlp", "lstm", "gru", "tcn"], "Model type must be one of [mlp, lstm, gru, tcn]"
@@ -97,15 +126,11 @@ if __name__ == "__main__":
     print(experiment_path)
     print("Testing Dynamics model:", model_path)
     args = load_args(experiment_path + "args.txt")
+    args.accelerator = requested_accelerator
 
     model_name = args.model_type + "_" + str(args.history_length) + "_" + args.dataset + "_" + str(args.unroll_length) 
 
     args.unroll_length = 60
-    
-    # device
-    args.device = "cuda:0"
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
-
 
     # Load all hdf5 paths in the data folder into a list sorted 
     hdf5_files = sorted(glob.glob(data_path + "test/*.h5"))

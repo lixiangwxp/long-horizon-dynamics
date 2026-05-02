@@ -1,13 +1,19 @@
 import argparse
 
+def int_list(value):
+    if isinstance(value, list):
+        return value
+    return [int(e) for e in str(value).split(',') if e != ""]
+
+
 def parse_args():
     print("Parsing arguments ...")
     parser = argparse.ArgumentParser(description='Arguments for dynamics learning')
 
     # architecture
     parser.add_argument('-N', '--model_type',      type=str,       default='gru')               # mlp, gru, lstm, tcn
-    parser.add_argument('--encoder_sizes',         type=list,      default='256')
-    parser.add_argument('--decoder_sizes',         type=list,      default='64,64,32')
+    parser.add_argument('--encoder_sizes',         type=int_list,  default=[256])
+    parser.add_argument('--decoder_sizes',         type=int_list,  default=[64, 64, 32])
     parser.add_argument('--encoder_output',        type=str,       default='output')
     parser.add_argument('--num_layers',            type=int,       default=2)
     parser.add_argument('--kernel_size',           type=int,       default=2)
@@ -23,6 +29,7 @@ def parse_args():
     parser.add_argument('-n', '--num_workers',     type=int,      default=4)
     parser.add_argument('--seed',                  type=int,      default=10)
     parser.add_argument('--predictor_type',        type=str,      default='velocity')
+    parser.add_argument('--accelerator',           type=str,      default='auto', choices=['auto', 'cuda', 'mps', 'cpu'])
 
     # Optimizer
     parser.add_argument('-l', '--learning_rate',   type=float,    default=0.0001)
@@ -47,14 +54,9 @@ def parse_args():
     parser.add_argument('--unroll_length',         type=int,      default=2)
     parser.add_argument('--history_length',        type=int,      default=20)
     parser.add_argument('--delta',                 type=bool,     default=True)
-    parser.add_argument('--dataset',               type=str,      default='pi_tcn')         # pi_tcn, neurobem
+    parser.add_argument('--dataset',               type=str,      default='pi_tcn')         # pi_tcn, neurobem, neurobemfullstate
 
-    args = parser.parse_args()
-    for arg in vars(args):
-        value = getattr(args, arg)
-        if isinstance(value, list):
-            setattr(args, arg, [int(e) for e in ''.join(value).split(',')])
-    return args
+    return parser.parse_args()
 
 
 def save_args(args, file_path):

@@ -5,6 +5,8 @@ from config import parse_args, save_args
 from dynamics_learning.data import load_dataset
 import pytorch_lightning
 from dynamics_learning.lighting import DynamicsLearning
+from dynamics_learning.device import select_device
+from dynamics_learning.wandb_utils import log_experiment_artifact
 
 import sys
 import time
@@ -14,15 +16,29 @@ warnings.filterwarnings('ignore')
 
 def main(args):
 
-    # WandB Logging
-    wandb_logger = pytorch_lightning.loggers.WandbLogger(name="wandb_logger", project="dynamics_learning", save_dir=experiment_path) 
+    device_config = select_device(args.accelerator, args.gpu_id, args.num_devices)
+    args.device = str(device_config["device"])
+    args.resolved_accelerator = device_config["resolved"]
+    print("Training model on", args.device, "\n")
+    save_args(args, os.path.join(experiment_path, "args.txt"))
+
+    # Logging
+    wandb_logger = pytorch_lightning.loggers.WandbLogger(
+        name="wandb_logger",
+        project="dynamics_learning",
+        save_dir=experiment_path,
+        log_model="all",
+    ) 
+    csv_logger = pytorch_lightning.loggers.CSVLogger(save_dir=experiment_path, name="csv_logs")
+    loggers = [wandb_logger, csv_logger]
 
     # Checkopoint 
     checkpoint_callback = pytorch_lightning.callbacks.ModelCheckpoint(
         monitor="best_valid_loss",
         dirpath=os.path.join(experiment_path, "checkpoints"),
-        filename="model-{epoch:02d}-{val_loss:.2f}",
+        filename="model-{epoch:02d}-{best_valid_loss:.2f}",
         save_top_k=3,
+        save_last=True,
         mode="min"
     )
 
@@ -35,8 +51,8 @@ def main(args):
         data_path + "train/",
         "train.h5",
         args,
-        num_workers=16,
-        pin_memory=True,
+        num_workers=args.num_workers,
+        pin_memory=device_config["pin_memory"],
     )
 
     valid_dataset, valid_loader = load_dataset(
@@ -44,8 +60,8 @@ def main(args):
         data_path + "valid/",
         "valid.h5",
         args,
-        num_workers=16,
-        pin_memory=True,
+        num_workers=args.num_workers,
+        pin_memory=device_config["pin_memory"],
     )
 
     input_size = train_dataset.X_shape[2]
@@ -70,12 +86,12 @@ def main(args):
 
     # Train the model
     trainer = pytorch_lightning.Trainer(
-        accelerator="gpu",
-        devices="auto",
+        accelerator=device_config["lightning_accelerator"],
+        devices=device_config["devices"],
         max_epochs=args.epochs,
         check_val_every_n_epoch=args.val_freq,
         default_root_dir=experiment_path,
-        logger=wandb_logger,
+        logger=loggers,
         callbacks=[checkpoint_callback],
         num_sanity_val_steps=0
     )
@@ -83,6 +99,13 @@ def main(args):
         wandb_logger.experiment.config.update(vars(args))
     # trainer.validate(model, dataloaders=valid_loader)
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+    if trainer.is_global_zero:
+        log_experiment_artifact(
+            wandb_logger,
+            experiment_path,
+            artifact_prefix=f"train-{args.dataset}-{args.model_type}",
+            include_checkpoints=True,
+        )
 
 if __name__ == "__main__":
     # parse arguments
@@ -110,14 +133,6 @@ if __name__ == "__main__":
 
     check_folder_paths([os.path.join(experiment_path, "checkpoints"), os.path.join(experiment_path, "plots"), os.path.join(experiment_path, "plots", "trajectory"), 
                         os.path.join(experiment_path, "plots", "testset")])
-
-    # save arguments
-    save_args(args, os.path.join(experiment_path, "args.txt"))
-
-    # Device
-    args.device = "cuda:0"
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
-    print("Training model on cuda:" + str(args.gpu_id) + "\n")
 
     # Train model
     main(args)
