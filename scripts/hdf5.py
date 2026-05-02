@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -11,15 +12,10 @@ from config import parse_args
 
 
 DATA_DTYPE = np.float32
-CANONICAL_DT_SECONDS = 0.01
+DT_SECONDS = 0.01
+FULL_STATE_SCHEMA_VERSION = "full_state_v1"
 
-NEUROBEM_FULLSTATE_DATASET = "neurobemfullstate"
-PITCN_FULLSTATE_DATASET = "pitcnfullstate"
-CANONICAL_DATASET = NEUROBEM_FULLSTATE_DATASET
-SOURCE_DATASET_FOR_CANONICAL = "neurobem"
-SCHEMA_VERSION = "full_state_v1"
-
-BASE_FEATURE_SLICES = {
+FULL_STATE_FEATURE_SLICES = {
     "p_W": [0, 3],
     "v_W": [3, 6],
     "q": [6, 10],
@@ -27,21 +23,28 @@ BASE_FEATURE_SLICES = {
     "u": [13, 17],
 }
 
-NEUROBEM_FEATURE_NAMES = [
-    "p_W_x", "p_W_y", "p_W_z",
-    "v_W_x", "v_W_y", "v_W_z",
-    "q_WB_w", "q_WB_x", "q_WB_y", "q_WB_z",
-    "omega_B_x", "omega_B_y", "omega_B_z",
-    "u_1", "u_2", "u_3", "u_4",
-    "v_B_x", "v_B_y", "v_B_z",
-    "a_x", "a_y", "a_z",
-    "alpha_x", "alpha_y", "alpha_z",
-    "dmot_1", "dmot_2", "dmot_3", "dmot_4",
-    "vbat",
+FULL_STATE_FEATURE_NAMES = [
+    "p_W_x",
+    "p_W_y",
+    "p_W_z",
+    "v_W_x",
+    "v_W_y",
+    "v_W_z",
+    "q_WB_w",
+    "q_WB_x",
+    "q_WB_y",
+    "q_WB_z",
+    "omega_B_x",
+    "omega_B_y",
+    "omega_B_z",
+    "u_1",
+    "u_2",
+    "u_3",
+    "u_4",
 ]
 
 NEUROBEM_FEATURE_SLICES = {
-    **BASE_FEATURE_SLICES,
+    **FULL_STATE_FEATURE_SLICES,
     "v_B": [17, 20],
     "a": [20, 23],
     "alpha": [23, 26],
@@ -49,42 +52,82 @@ NEUROBEM_FEATURE_SLICES = {
     "vbat": [30, 31],
 }
 
-PITCN_FEATURE_NAMES = [
-    "p_W_x", "p_W_y", "p_W_z",
-    "v_W_x", "v_W_y", "v_W_z",
-    "q_WB_w", "q_WB_x", "q_WB_y", "q_WB_z",
-    "omega_B_x", "omega_B_y", "omega_B_z",
-    "u_0", "u_1", "u_2", "u_3",
+NEUROBEM_FEATURE_NAMES = [
+    *FULL_STATE_FEATURE_NAMES,
+    "v_B_x",
+    "v_B_y",
+    "v_B_z",
+    "a_x",
+    "a_y",
+    "a_z",
+    "alpha_x",
+    "alpha_y",
+    "alpha_z",
+    "dmot_1",
+    "dmot_2",
+    "dmot_3",
+    "dmot_4",
+    "vbat",
 ]
 
-PITCN_FEATURE_SLICES = dict(BASE_FEATURE_SLICES)
-
-CANONICAL_FEATURE_NAMES = NEUROBEM_FEATURE_NAMES
-CANONICAL_FEATURE_SLICES = NEUROBEM_FEATURE_SLICES
-
-PITCN_MISSING_POSITION_MESSAGE = (
-    "PI-TCN full-state requires position columns p_x,p_y,p_z. "
-    "The current CSV seems to be the old derivative-learning export. "
-    "Please regenerate PI-TCN CSV from raw bags before appendHistory, "
-    "keeping p,q,v,w,u per trajectory."
-)
-
-
-def normalize_and_resample_time(data):
-    data = data.copy()
-    data["t"] = data["t"] - data["t"].values[0]
-    data["t"] = pd.to_datetime(data["t"], unit="s")
-    data.set_index("t", inplace=True)
-    data = data.resample(f"{CANONICAL_DT_SECONDS}s").mean()
-    data = data.interpolate(method="linear", limit_direction="both")
-    data = data.dropna()
-    data.reset_index(inplace=True)
-    return data
+DATASET_SPECS = {
+    "neurobemfullstate": {
+        "source_dataset": "neurobem",
+        "source_dir": "neurobem",
+        "feature_names": NEUROBEM_FEATURE_NAMES,
+        "feature_slices": NEUROBEM_FEATURE_SLICES,
+        "raw_quaternion_order": "wxyz",
+        "raw_control_unit": "rad/s",
+        "control_kind": "motor_speed_rad_per_sec_scaled_0.001",
+        "control_scale": 0.001,
+        "canonical_velocity_frame": "world",
+        "angular_velocity_frame": "body",
+    },
+    "pitcnfullstate": {
+        "source_dataset": "pi_tcn",
+        "source_dir": "pi_tcn",
+        "feature_names": FULL_STATE_FEATURE_NAMES,
+        "feature_slices": FULL_STATE_FEATURE_SLICES,
+        "raw_quaternion_order": "wxyz",
+        "raw_control_unit": "rad/s",
+        "control_kind": "motor_speed_rad_per_sec_scaled_0.001",
+        "control_scale": 0.001,
+        "canonical_velocity_frame": "world",
+        "angular_velocity_frame": "body",
+    },
+    "nanodronefullstate": {
+        "source_dataset": "nanodrone",
+        "feature_names": FULL_STATE_FEATURE_NAMES,
+        "feature_slices": FULL_STATE_FEATURE_SLICES,
+        "raw_quaternion_order": "xyzw",
+        "raw_control_unit": "rad/s",
+        "control_kind": "motor_speed_rad_per_sec_scaled_0.001",
+        "control_scale": 0.001,
+        "canonical_velocity_frame": "world",
+        "angular_velocity_frame": "body",
+    },
+}
 
 
 def normalize_quaternion_wxyz(q):
+    q = np.asarray(q, dtype=np.float64)
     norm = np.linalg.norm(q, axis=1, keepdims=True)
-    return q / np.clip(norm, 1e-12, None)
+    if np.any(norm <= 0.0):
+        raise ValueError("Cannot normalize quaternion with zero norm.")
+    return q / norm
+
+
+def enforce_quaternion_sign_continuity_wxyz(q):
+    q = np.asarray(q, dtype=np.float64).copy()
+    for idx in range(1, q.shape[0]):
+        if np.dot(q[idx], q[idx - 1]) < 0.0:
+            q[idx] = -q[idx]
+    return q
+
+
+def prepare_quaternion_wxyz(q):
+    q = normalize_quaternion_wxyz(q)
+    return enforce_quaternion_sign_continuity_wxyz(q)
 
 
 def quaternion_wxyz_to_rotation_matrix(q):
@@ -94,25 +137,99 @@ def quaternion_wxyz_to_rotation_matrix(q):
     y = q[:, 2]
     z = q[:, 3]
 
-    R = np.empty((q.shape[0], 3, 3), dtype=q.dtype)
-    R[:, 0, 0] = 1 - 2 * (y * y + z * z)
-    R[:, 0, 1] = 2 * (x * y - z * w)
-    R[:, 0, 2] = 2 * (x * z + y * w)
-    R[:, 1, 0] = 2 * (x * y + z * w)
-    R[:, 1, 1] = 1 - 2 * (x * x + z * z)
-    R[:, 1, 2] = 2 * (y * z - x * w)
-    R[:, 2, 0] = 2 * (x * z - y * w)
-    R[:, 2, 1] = 2 * (y * z + x * w)
-    R[:, 2, 2] = 1 - 2 * (x * x + y * y)
-    return R
+    rotation = np.empty((q.shape[0], 3, 3), dtype=q.dtype)
+    rotation[:, 0, 0] = 1 - 2 * (y * y + z * z)
+    rotation[:, 0, 1] = 2 * (x * y - z * w)
+    rotation[:, 0, 2] = 2 * (x * z + y * w)
+    rotation[:, 1, 0] = 2 * (x * y + z * w)
+    rotation[:, 1, 1] = 1 - 2 * (x * x + z * z)
+    rotation[:, 1, 2] = 2 * (y * z - x * w)
+    rotation[:, 2, 0] = 2 * (x * z - y * w)
+    rotation[:, 2, 1] = 2 * (y * z + x * w)
+    rotation[:, 2, 2] = 1 - 2 * (x * x + y * y)
+    return rotation
+
+
+def normalize_and_resample_time(data):
+    data = data.copy()
+    data["t"] = data["t"] - data["t"].values[0]
+    data["t"] = pd.to_timedelta(data["t"], unit="s")
+    data = data.set_index("t").resample(f"{DT_SECONDS}s").mean()
+    data = data.interpolate(method="linear").ffill().bfill()
+    return data.reset_index(drop=True)
+
+
+def require_columns(data, required_columns, file_path):
+    missing_columns = [
+        column for column in required_columns if column not in data.columns
+    ]
+    if missing_columns:
+        raise ValueError(f"{file_path} is missing required columns: {missing_columns}")
+
+
+def check_finite(data_np, dataset_name, source_file, feature_slices, feature_names):
+    finite_mask = np.isfinite(data_np)
+    if finite_mask.all():
+        return
+
+    bad_mask = ~finite_mask
+    bad_columns = np.where(bad_mask.any(axis=0))[0].tolist()
+    bad_feature_names = [
+        feature_names[idx] if idx < len(feature_names) else f"column_{idx}"
+        for idx in bad_columns
+    ]
+    bad_groups = []
+    for group_name, (start, end) in feature_slices.items():
+        if bad_mask[:, start:end].any():
+            bad_groups.append(group_name)
+
+    raise ValueError(
+        "Non-finite values found before HDF5 write: "
+        f"dataset_name={dataset_name}, source_file={source_file}, "
+        f"bad_entries={int(bad_mask.sum())}, "
+        f"bad_columns={bad_columns}, bad_feature_names={bad_feature_names}, "
+        f"bad_feature_groups={bad_groups}"
+    )
 
 
 def extract_neurobem_full_state(data):
+    required_columns = [
+        "pos x",
+        "pos y",
+        "pos z",
+        "vel x",
+        "vel y",
+        "vel z",
+        "quat w",
+        "quat x",
+        "quat y",
+        "quat z",
+        "ang vel x",
+        "ang vel y",
+        "ang vel z",
+        "mot 1",
+        "mot 2",
+        "mot 3",
+        "mot 4",
+        "acc x",
+        "acc y",
+        "acc z",
+        "ang acc x",
+        "ang acc y",
+        "ang acc z",
+        "dmot 1",
+        "dmot 2",
+        "dmot 3",
+        "dmot 4",
+        "vbat",
+    ]
+    require_columns(data, required_columns, "neurobem csv")
+
     p_W = data[["pos x", "pos y", "pos z"]].values
-    q = normalize_quaternion_wxyz(data[["quat w", "quat x", "quat y", "quat z"]].values)
+    q = prepare_quaternion_wxyz(data[["quat w", "quat x", "quat y", "quat z"]].values)
     v_B = data[["vel x", "vel y", "vel z"]].values
-    R_WB = quaternion_wxyz_to_rotation_matrix(q)
-    v_W = np.einsum("nij,nj->ni", R_WB, v_B)
+    rotation_WB = quaternion_wxyz_to_rotation_matrix(q)
+    v_W = np.einsum("nij,nj->ni", rotation_WB, v_B)
     omega_B = data[["ang vel x", "ang vel y", "ang vel z"]].values
     u = data[["mot 1", "mot 2", "mot 3", "mot 4"]].values * 0.001
     a = data[["acc x", "acc y", "acc z"]].values
@@ -125,106 +242,123 @@ def extract_neurobem_full_state(data):
 
 
 def extract_pitcn_full_state(data):
-    position_columns = ["p_x", "p_y", "p_z"]
-    if not all(column in data.columns for column in position_columns):
-        raise ValueError(PITCN_MISSING_POSITION_MESSAGE)
-
-    state_columns = [
-        "p_x", "p_y", "p_z",
-        "v_x", "v_y", "v_z",
-        "q_w", "q_x", "q_y", "q_z",
-        "w_x", "w_y", "w_z",
+    required_columns = [
+        "p_x",
+        "p_y",
+        "p_z",
+        "v_x",
+        "v_y",
+        "v_z",
+        "q_w",
+        "q_x",
+        "q_y",
+        "q_z",
+        "w_x",
+        "w_y",
+        "w_z",
+        "u_0",
+        "u_1",
+        "u_2",
+        "u_3",
     ]
-    missing_state_columns = [column for column in state_columns if column not in data.columns]
-    if missing_state_columns:
-        raise ValueError(f"PI-TCN full-state missing columns: {missing_state_columns}")
-
-    if all(column in data.columns for column in ["u_0", "u_1", "u_2", "u_3"]):
-        control = data[["u_0", "u_1", "u_2", "u_3"]].values
-        control_kind = "motor_speed"
-    elif all(column in data.columns for column in ["f_0", "f_1", "f_2", "f_3"]):
-        control = data[["f_0", "f_1", "f_2", "f_3"]].values
-        control_kind = "motor_thrust"
-    else:
-        raise ValueError("PI-TCN full-state requires u_0..u_3 or f_0..f_3")
+    require_columns(data, required_columns, "pi_tcn csv")
 
     p_W = data[["p_x", "p_y", "p_z"]].values
     v_W = data[["v_x", "v_y", "v_z"]].values
-    q = normalize_quaternion_wxyz(data[["q_w", "q_x", "q_y", "q_z"]].values)
+    q = prepare_quaternion_wxyz(data[["q_w", "q_x", "q_y", "q_z"]].values)
     omega_B = data[["w_x", "w_y", "w_z"]].values
+    u = data[["u_0", "u_1", "u_2", "u_3"]].values * 0.001
 
-    data_np = np.hstack((p_W, v_W, q, omega_B, control))
-    return data_np.astype(DATA_DTYPE, copy=False), control_kind
-
-
-def neurobem_csv_to_canonical_trajectory(csv_file_path):
-    data = pd.read_csv(csv_file_path)
-    data = normalize_and_resample_time(data)
-    data_np = extract_neurobem_full_state(data)
+    data_np = np.hstack((p_W, v_W, q, omega_B, u))
     return data_np.astype(DATA_DTYPE, copy=False)
 
 
-def pitcn_csv_to_canonical_trajectory(csv_file_path):
+def extract_nanodrone_full_state(data):
+    required_columns = [
+        "x",
+        "y",
+        "z",
+        "vx",
+        "vy",
+        "vz",
+        "qx",
+        "qy",
+        "qz",
+        "qw",
+        "wx",
+        "wy",
+        "wz",
+        "m1_rads",
+        "m2_rads",
+        "m3_rads",
+        "m4_rads",
+    ]
+    require_columns(data, required_columns, "nanodrone csv")
+
+    p_W = data[["x", "y", "z"]].values
+    v_W = data[["vx", "vy", "vz"]].values
+    q_xyzw = data[["qx", "qy", "qz", "qw"]].values
+    q = prepare_quaternion_wxyz(q_xyzw[:, [3, 0, 1, 2]])
+    omega_B = data[["wx", "wy", "wz"]].values
+    u = data[["m1_rads", "m2_rads", "m3_rads", "m4_rads"]].values * 0.001
+
+    data_np = np.hstack((p_W, v_W, q, omega_B, u))
+    return data_np.astype(DATA_DTYPE, copy=False)
+
+
+def csv_to_canonical_trajectory(csv_file_path, dataset_name):
     data = pd.read_csv(csv_file_path)
-    data = normalize_and_resample_time(data)
-    return extract_pitcn_full_state(data)
+    if dataset_name in {"neurobemfullstate", "pitcnfullstate"}:
+        data = normalize_and_resample_time(data)
 
+    if dataset_name == "neurobemfullstate":
+        return extract_neurobem_full_state(data)
+    if dataset_name == "pitcnfullstate":
+        return extract_pitcn_full_state(data)
+    if dataset_name == "nanodronefullstate":
+        return extract_nanodrone_full_state(data)
 
-def dataset_schema(dataset_name):
-    if dataset_name == NEUROBEM_FULLSTATE_DATASET:
-        return {
-            "source_dataset": "neurobem",
-            "feature_names": NEUROBEM_FEATURE_NAMES,
-            "feature_slices": NEUROBEM_FEATURE_SLICES,
-            "control_kind": "motor_speed_scaled",
-        }
-    if dataset_name == PITCN_FULLSTATE_DATASET:
-        return {
-            "source_dataset": "pi_tcn",
-            "feature_names": PITCN_FEATURE_NAMES,
-            "feature_slices": PITCN_FEATURE_SLICES,
-            "control_kind": None,
-        }
     raise ValueError(f"Unsupported full-state dataset: {dataset_name}")
 
 
-def csv_to_trajectory(dataset_name, csv_file_path):
-    if dataset_name == NEUROBEM_FULLSTATE_DATASET:
-        data_np = neurobem_csv_to_canonical_trajectory(csv_file_path)
-        return data_np, "motor_speed_scaled"
-    if dataset_name == PITCN_FULLSTATE_DATASET:
-        return pitcn_csv_to_canonical_trajectory(csv_file_path)
-    raise ValueError(f"Unsupported full-state dataset: {dataset_name}")
+def unique_trajectory_name(csv_file_path, used_names):
+    base_name = csv_file_path.stem
+    trajectory_name = base_name
+    suffix = 2
+    while trajectory_name in used_names:
+        trajectory_name = f"{base_name}_{suffix}"
+        suffix += 1
+    used_names.add(trajectory_name)
+    return trajectory_name
 
 
-def write_full_state_split_hdf5(source_split_path, output_split_path, hdf5_file, dataset_name):
-    schema = dataset_schema(dataset_name)
+def write_canonical_hdf5(
+    csv_files, output_split_path, hdf5_file, dataset_name, metadata
+):
     os.makedirs(output_split_path, exist_ok=True)
 
     trajectories = []
     trajectory_names = []
     source_files = []
     trajectory_lengths = []
-    split_control_kind = schema["control_kind"]
+    used_names = set()
+    feature_slices = metadata["feature_slices"]
+    feature_names = metadata["feature_names"]
 
-    csv_files = [file for file in sorted(os.listdir(source_split_path)) if file.endswith(".csv")]
-    if not csv_files:
-        raise ValueError(f"No CSV files found in {source_split_path}")
+    for csv_file_path in tqdm(csv_files):
+        data_np = csv_to_canonical_trajectory(csv_file_path, dataset_name)
+        check_finite(
+            data_np, dataset_name, str(csv_file_path), feature_slices, feature_names
+        )
 
-    for file in tqdm(csv_files):
-        csv_file_path = os.path.join(source_split_path, file)
-        data_np, control_kind = csv_to_trajectory(dataset_name, csv_file_path)
-
-        if split_control_kind is None:
-            split_control_kind = control_kind
-        elif split_control_kind != control_kind:
-            raise ValueError(f"Mixed control_kind in {source_split_path}: {split_control_kind} and {control_kind}")
-
-        trajectory_name = os.path.splitext(file)[0]
+        trajectory_name = unique_trajectory_name(csv_file_path, used_names)
         trajectories.append(data_np)
         trajectory_names.append(trajectory_name)
-        source_files.append(file)
+        source_files.append(str(csv_file_path))
         trajectory_lengths.append(data_np.shape[0])
+
+    if not trajectories:
+        raise FileNotFoundError(f"No CSV trajectories found for {dataset_name}.")
 
     all_data = np.concatenate(trajectories, axis=0).astype(DATA_DTYPE, copy=False)
     trajectory_starts = np.cumsum([0] + trajectory_lengths[:-1]).astype(np.int64)
@@ -233,14 +367,20 @@ def write_full_state_split_hdf5(source_split_path, output_split_path, hdf5_file,
     hdf5_path = os.path.join(output_split_path, hdf5_file)
     with h5py.File(hdf5_path, "w") as hf:
         hf.attrs["dataset_name"] = dataset_name
-        hf.attrs["source_dataset"] = schema["source_dataset"]
-        hf.attrs["schema_version"] = SCHEMA_VERSION
-        hf.attrs["dt_seconds"] = CANONICAL_DT_SECONDS
-        hf.attrs["feature_names"] = json.dumps(schema["feature_names"])
-        hf.attrs["feature_slices"] = json.dumps(schema["feature_slices"])
+        hf.attrs["source_dataset"] = metadata["source_dataset"]
+        hf.attrs["schema_version"] = FULL_STATE_SCHEMA_VERSION
+        hf.attrs["dt_seconds"] = DT_SECONDS
+        hf.attrs["feature_names"] = json.dumps(feature_names)
+        hf.attrs["feature_slices"] = json.dumps(feature_slices)
         hf.attrs["trajectory_names"] = json.dumps(trajectory_names)
         hf.attrs["source_files"] = json.dumps(source_files)
-        hf.attrs["control_kind"] = split_control_kind
+        hf.attrs["control_kind"] = metadata["control_kind"]
+        hf.attrs["raw_control_unit"] = metadata["raw_control_unit"]
+        hf.attrs["control_scale"] = metadata["control_scale"]
+        hf.attrs["quaternion_order"] = "wxyz"
+        hf.attrs["raw_quaternion_order"] = metadata["raw_quaternion_order"]
+        hf.attrs["canonical_velocity_frame"] = metadata["canonical_velocity_frame"]
+        hf.attrs["angular_velocity_frame"] = metadata["angular_velocity_frame"]
 
         data_dataset = hf.create_dataset("data", data=all_data)
         data_dataset.dims[0].label = "time_steps"
@@ -250,12 +390,12 @@ def write_full_state_split_hdf5(source_split_path, output_split_path, hdf5_file,
         hf.create_dataset("trajectory_lengths", data=trajectory_lengths)
 
         trajectories_group = hf.create_group("trajectories")
-        for trajectory_name, source_file, data_np in zip(trajectory_names, source_files, trajectories):
+        for trajectory_name, source_file, data_np in zip(
+            trajectory_names, source_files, trajectories
+        ):
             trajectory_group = trajectories_group.create_group(trajectory_name)
             trajectory_group.attrs["source_file"] = source_file
-            trajectory_group.attrs["feature_names"] = json.dumps(schema["feature_names"])
-            trajectory_group.attrs["feature_slices"] = json.dumps(schema["feature_slices"])
-            trajectory_group.attrs["control_kind"] = split_control_kind
+            trajectory_group.attrs["feature_names"] = json.dumps(feature_names)
             trajectory_data = trajectory_group.create_dataset("data", data=data_np)
             trajectory_data.dims[0].label = "time_steps"
             trajectory_data.dims[1].label = "features"
@@ -265,47 +405,137 @@ def write_full_state_split_hdf5(source_split_path, output_split_path, hdf5_file,
     return hdf5_path
 
 
-def split_specs(source_data_path, dataset_name):
-    specs = [
-        ("train/", "train/", "train.h5"),
-        ("valid/", "valid/", "valid.h5"),
+def sorted_csv_files(path):
+    return sorted(Path(path).glob("*.csv"))
+
+
+def convert_standard_full_state_dataset(dataset_name, resources_path):
+    spec = DATASET_SPECS[dataset_name]
+    source_data_path = Path(resources_path) / "data" / spec["source_dir"]
+    output_data_path = Path(resources_path) / "data" / dataset_name
+    split_specs = [
+        ("train", "train.h5"),
+        ("valid", "valid.h5"),
+        ("test", "test.h5"),
     ]
-    if dataset_name == PITCN_FULLSTATE_DATASET and os.path.isdir(os.path.join(source_data_path, "test_trajectories")):
-        specs.append(("test_trajectories/", "test/", "test.h5"))
-    else:
-        specs.append(("test/", "test/", "test.h5"))
-    return specs
+
+    for split_name, hdf5_file in split_specs:
+        source_split_path = source_data_path / split_name
+        if dataset_name == "pitcnfullstate" and split_name == "test":
+            test_trajectories = source_data_path / "test_trajectories"
+            if test_trajectories.is_dir():
+                source_split_path = test_trajectories
+
+        csv_files = sorted_csv_files(source_split_path)
+        output_split_path = output_data_path / split_name
+        hdf5_path = write_canonical_hdf5(
+            csv_files, output_split_path, hdf5_file, dataset_name, spec
+        )
+        print(f"Saved {dataset_name} {split_name} split to {hdf5_path}")
 
 
-def csv_to_full_state_hdf5(source_data_path, output_data_path, dataset_name):
-    for source_folder, output_folder, hdf5_file in split_specs(source_data_path, dataset_name):
-        source_split_path = os.path.join(source_data_path, source_folder)
-        output_split_path = os.path.join(output_data_path, output_folder)
-        hdf5_path = write_full_state_split_hdf5(source_split_path, output_split_path, hdf5_file, dataset_name)
-        print(f"Saved {dataset_name} split to {hdf5_path}")
+def find_nanodrone_data_root(raw_path):
+    raw_path = Path(raw_path).expanduser()
+    candidates = [
+        raw_path / "data",
+        raw_path,
+        raw_path / "nanodrone-sysid-benchmark" / "data",
+    ]
+    checked_paths = []
+
+    for candidate in candidates:
+        train_dir = candidate / "train"
+        test_dir = candidate / "test"
+        checked_paths.extend([str(train_dir), str(test_dir)])
+        if train_dir.is_dir() and test_dir.is_dir():
+            return candidate, checked_paths
+
+    raise FileNotFoundError(
+        "Could not find NanoDrone train/test CSV directories. "
+        f"Checked paths: {checked_paths}"
+    )
 
 
-def write_canonical_split_hdf5(source_split_path, output_split_path, hdf5_file):
-    return write_full_state_split_hdf5(source_split_path, output_split_path, hdf5_file, NEUROBEM_FULLSTATE_DATASET)
+def split_nanodrone_csv_files(data_root):
+    train_dir = data_root / "train"
+    valid_dir = data_root / "valid"
+    test_dir = data_root / "test"
+
+    if valid_dir.is_dir():
+        return {
+            "train": sorted_csv_files(train_dir),
+            "valid": sorted_csv_files(valid_dir),
+            "test": sorted_csv_files(test_dir),
+        }
+
+    train_files = []
+    valid_files = []
+    for csv_file in sorted_csv_files(train_dir):
+        name = csv_file.name.lower()
+        if not any(prefix in name for prefix in ("square", "random", "chirp")):
+            continue
+        if "run4" in name:
+            valid_files.append(csv_file)
+        elif any(run in name for run in ("run1", "run2", "run3")):
+            train_files.append(csv_file)
+
+    test_files = [
+        csv_file
+        for csv_file in sorted_csv_files(test_dir)
+        if "melon" in csv_file.name.lower()
+    ]
+
+    return {
+        "train": train_files,
+        "valid": valid_files,
+        "test": test_files,
+    }
 
 
-def csv_to_canonical_hdf5(source_data_path, output_data_path):
-    return csv_to_full_state_hdf5(source_data_path, output_data_path, NEUROBEM_FULLSTATE_DATASET)
+def convert_nanodrone_full_state_dataset(args, resources_path):
+    dataset_name = "nanodronefullstate"
+    spec = DATASET_SPECS[dataset_name]
+    data_root, checked_paths = find_nanodrone_data_root(args.nanodrone_raw_path)
+    print("NanoDrone raw data root:", data_root)
+    print("NanoDrone checked paths:", checked_paths)
+
+    output_data_path = Path(resources_path) / "data" / dataset_name
+    split_files = split_nanodrone_csv_files(data_root)
+    split_specs = {
+        "train": "train.h5",
+        "valid": "valid.h5",
+        "test": "test.h5",
+    }
+
+    for split_name, hdf5_file in split_specs.items():
+        csv_files = split_files[split_name]
+        if not csv_files:
+            raise FileNotFoundError(
+                f"No NanoDrone CSV files selected for {split_name} split "
+                f"under {data_root}."
+            )
+
+        output_split_path = output_data_path / split_name
+        hdf5_path = write_canonical_hdf5(
+            csv_files, output_split_path, hdf5_file, dataset_name, spec
+        )
+        print(f"Saved {dataset_name} {split_name} split to {hdf5_path}")
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
-
     folder_path = "/".join(sys.path[0].split("/")[:-1]) + "/"
     resources_path = folder_path + "resources/"
 
-    if args.dataset == NEUROBEM_FULLSTATE_DATASET:
-        source_data_path = resources_path + "data/neurobem/"
-        output_data_path = resources_path + f"data/{NEUROBEM_FULLSTATE_DATASET}/"
-    elif args.dataset == PITCN_FULLSTATE_DATASET:
-        source_data_path = resources_path + "data/pi_tcn/"
-        output_data_path = resources_path + f"data/{PITCN_FULLSTATE_DATASET}/"
+    if args.dataset == "nanodronefullstate":
+        convert_nanodrone_full_state_dataset(args, resources_path)
+    elif args.dataset in {"neurobemfullstate", "pitcnfullstate"}:
+        convert_standard_full_state_dataset(args.dataset, resources_path)
     else:
-        raise ValueError("hdf5.py now generates canonical full-state trajectory HDF5 for neurobemfullstate or pitcnfullstate.")
+        raise ValueError(
+            f"Unsupported dataset for full-state HDF5 conversion: {args.dataset}"
+        )
 
-    csv_to_full_state_hdf5(source_data_path, output_data_path, args.dataset)
+
+if __name__ == "__main__":
+    main()

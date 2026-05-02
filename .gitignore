@@ -1,3 +1,5 @@
 resources/
+resources/data/
+*.h5
 __pycache__/
 *.py[cod]
