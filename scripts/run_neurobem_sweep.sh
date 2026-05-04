@@ -175,15 +175,7 @@ wandb_logged_in() {
   if ! command -v wandb >/dev/null 2>&1; then
     return 1
   fi
-  local status_output
-  if ! status_output="$(wandb status 2>/dev/null)"; then
-    return 1
-  fi
-  if echo "$status_output" | grep -q '"api_key": null'; then
-    return 1
-  fi
-  echo "$status_output" | grep -q '"api_key":' || return 1
-  return 0
+  wandb login --verify >/tmp/wandb_verify.out 2>/tmp/wandb_verify.err
 }
 
 initial_wandb_mode() {
