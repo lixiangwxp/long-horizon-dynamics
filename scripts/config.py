@@ -2,7 +2,7 @@ import argparse
 
 
 FULL_STATE_DATASETS = ["neurobemfullstate", "pitcnfullstate", "nanodronefullstate"]
-MODEL_TYPES = ["mlp", "lstm", "gru", "tcn"]
+MODEL_TYPES = ["mlp", "lstm", "gru", "tcn", "tcnlstm", "grutcn"]
 
 
 def int_list(value):

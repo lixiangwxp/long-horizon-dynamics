@@ -1,4 +1,4 @@
-from .models import MLP, LSTM, GRU, TCN
+from .models import MLP, LSTM, GRU, TCN, TCNLSTM, GRUTCN
 
 
 def get_model(args, input_size, output_size):
@@ -40,28 +40,33 @@ def get_model(args, input_size, output_size):
             args.kernel_size,
             args.dropout,
         ),
+        "tcnlstm": TCNLSTM(
+            input_size,
+            args.encoder_sizes,
+            args.history_length,
+            args.decoder_sizes,
+            output_size,
+            args.kernel_size,
+            args.dropout,
+            args.num_layers,
+        ),
+        "grutcn": GRUTCN(
+            input_size,
+            args.encoder_sizes,
+            args.history_length,
+            args.decoder_sizes,
+            output_size,
+            args.kernel_size,
+            args.dropout,
+            args.num_layers,
+        ),
     }
 
-    # If MLP print model parameters in millions using only .model in
-    if args.model_type == "mlp":
-        print(
-            "Model parameters: ",
-            sum(p.numel() for p in model[args.model_type].model.parameters()) / 1000000,
-            "M",
-        )
-    else:
-        # Print the number of model parameters in millions for both encoder and decoder
-        print(
-            "Encoder parameters: ",
-            sum(p.numel() for p in model[args.model_type].encoder.parameters())
-            / 1000000,
-            "M",
-        )
-        print(
-            "Decoder parameters: ",
-            sum(p.numel() for p in model[args.model_type].decoder.parameters())
-            / 1000000,
-            "M",
-        )
+    selected_model = model[args.model_type]
+    print(
+        "Model parameters: ",
+        sum(p.numel() for p in selected_model.parameters()) / 1000000,
+        "M",
+    )
 
-    return model[args.model_type]
+    return selected_model
