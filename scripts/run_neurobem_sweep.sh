@@ -18,6 +18,11 @@ SWEEP_ROOT=""
 LIMIT_TRAIN_BATCHES="1.0"
 LIMIT_VAL_BATCHES="1.0"
 LIMIT_PREDICT_BATCHES="0"
+EARLY_STOPPING_PATIENCE=300
+EARLY_STOPPING_MIN_DELTA="1e-5"
+SHUFFLE="False"
+BATCH_SIZES=(64 32 16)
+ACCUM_STEPS=(1 2 4)
 
 usage() {
   cat <<'USAGE'
@@ -29,6 +34,14 @@ Options:
   --smoke                  Run a one-epoch MLP/H=1 smoke test only
   --sweep-root DIR         Output sweep root directory
   --epochs N               Max epochs for each run (default: 10000)
+  --patience N             Early-stopping patience (default: 300)
+  --min-delta X            Early-stopping min_delta (default: 1e-5)
+  --batch-sizes CSV        OOM fallback micro batches (default: 64,32,16)
+  --accum-steps CSV        OOM fallback grad accumulation (default: 1,2,4)
+  --limit-train-batches X  Lightning train batch limit (default: 1.0)
+  --limit-val-batches X    Lightning validation batch limit (default: 1.0)
+  --limit-predict-batches X  Lightning predict batch limit (default: 0)
+  --shuffle BOOL           Shuffle training windows (default: False)
   --wandb-mode MODE        auto, online, or offline (default: auto)
   -h, --help               Show this help
 USAGE
@@ -48,6 +61,46 @@ while [ "$#" -gt 0 ]; do
     --epochs)
       [ "$#" -ge 2 ] || { echo "error: --epochs requires a value" >&2; exit 2; }
       EPOCHS="$2"
+      shift 2
+      ;;
+    --patience)
+      [ "$#" -ge 2 ] || { echo "error: --patience requires a value" >&2; exit 2; }
+      EARLY_STOPPING_PATIENCE="$2"
+      shift 2
+      ;;
+    --min-delta)
+      [ "$#" -ge 2 ] || { echo "error: --min-delta requires a value" >&2; exit 2; }
+      EARLY_STOPPING_MIN_DELTA="$2"
+      shift 2
+      ;;
+    --batch-sizes)
+      [ "$#" -ge 2 ] || { echo "error: --batch-sizes requires a value" >&2; exit 2; }
+      IFS=',' read -r -a BATCH_SIZES <<< "$2"
+      shift 2
+      ;;
+    --accum-steps)
+      [ "$#" -ge 2 ] || { echo "error: --accum-steps requires a value" >&2; exit 2; }
+      IFS=',' read -r -a ACCUM_STEPS <<< "$2"
+      shift 2
+      ;;
+    --limit-train-batches)
+      [ "$#" -ge 2 ] || { echo "error: --limit-train-batches requires a value" >&2; exit 2; }
+      LIMIT_TRAIN_BATCHES="$2"
+      shift 2
+      ;;
+    --limit-val-batches)
+      [ "$#" -ge 2 ] || { echo "error: --limit-val-batches requires a value" >&2; exit 2; }
+      LIMIT_VAL_BATCHES="$2"
+      shift 2
+      ;;
+    --limit-predict-batches)
+      [ "$#" -ge 2 ] || { echo "error: --limit-predict-batches requires a value" >&2; exit 2; }
+      LIMIT_PREDICT_BATCHES="$2"
+      shift 2
+      ;;
+    --shuffle)
+      [ "$#" -ge 2 ] || { echo "error: --shuffle requires a value" >&2; exit 2; }
+      SHUFFLE="$2"
       shift 2
       ;;
     --wandb-mode)
@@ -76,6 +129,11 @@ if [ "$SMOKE" -eq 1 ]; then
   LIMIT_PREDICT_BATCHES="4"
 fi
 
+if [ "${#BATCH_SIZES[@]}" -ne "${#ACCUM_STEPS[@]}" ]; then
+  echo "error: --batch-sizes and --accum-steps must have the same length" >&2
+  exit 2
+fi
+
 if [ -z "$SWEEP_ROOT" ]; then
   suffix="$(date +%Y%m%d-%H%M%S)"
   if [ "$SMOKE" -eq 1 ]; then
@@ -89,9 +147,6 @@ mkdir -p "$SWEEP_ROOT/logs"
 REPORT="$SWEEP_ROOT/RUN_REPORT.md"
 RESULTS_CSV="$SWEEP_ROOT/horizon_results.csv"
 PLOTS_DIR="$SWEEP_ROOT/horizon_curves"
-
-BATCH_SIZES=(64 32 16)
-ACCUM_STEPS=(1 2 4)
 
 cd "$SCRIPT_DIR"
 
@@ -110,9 +165,12 @@ init_report() {
 - Unroll length: \`$UNROLL_LENGTH\`
 - Max epochs: \`$EPOCHS\`
 - Seed: \`$SEED\`
-- OOM fallback: \`64x1 -> 32x2 -> 16x4\`
+- Early stopping: patience=\`$EARLY_STOPPING_PATIENCE\`, min_delta=\`$EARLY_STOPPING_MIN_DELTA\`
+- OOM fallback batches: \`${BATCH_SIZES[*]}\`
+- OOM fallback accumulation: \`${ACCUM_STEPS[*]}\`
 - W&B preference: \`$WANDB_MODE_PREF\`
 - Batch limits: train=\`$LIMIT_TRAIN_BATCHES\`, val=\`$LIMIT_VAL_BATCHES\`, predict=\`$LIMIT_PREDICT_BATCHES\`
+- Shuffle: \`$SHUFFLE\`
 
 ## Implementation Notes
 - Added early stopping and gradient accumulation support in training.
@@ -225,11 +283,12 @@ run_train_attempt() {
     --unroll_length "$UNROLL_LENGTH" \
     --epochs "$EPOCHS" \
     --early_stopping True \
-    --early_stopping_patience 300 \
-    --early_stopping_min_delta 1e-5 \
+    --early_stopping_patience "$EARLY_STOPPING_PATIENCE" \
+    --early_stopping_min_delta "$EARLY_STOPPING_MIN_DELTA" \
     --batch_size "$batch_size" \
     --accumulate_grad_batches "$accumulate" \
     --num_workers "$NUM_WORKERS" \
+    --shuffle "$SHUFFLE" \
     --limit_train_batches "$LIMIT_TRAIN_BATCHES" \
     --limit_val_batches "$LIMIT_VAL_BATCHES" \
     --limit_predict_batches "$LIMIT_PREDICT_BATCHES" \

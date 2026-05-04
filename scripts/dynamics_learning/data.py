@@ -142,13 +142,15 @@ class DynamicsDataset(Dataset):
 def load_dataset(mode, data_path, hdf5_file, args, num_workers, pin_memory):
     print("Generating", mode, "data ...")
     dataset = DynamicsDataset(mode, data_path, hdf5_file, args)
-    loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=args.shuffle,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
+    loader_kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": args.shuffle,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+    loader = DataLoader(dataset, **loader_kwargs)
     print("... Loaded", dataset.data_len, "windows")
     print("|State|   =", dataset.state_dim)
     print("|Control| =", dataset.control_dim)
