@@ -2,8 +2,10 @@ import csv
 import glob
 import json
 import os
+import re
 import sys
 import warnings
+from pathlib import Path
 
 import pytorch_lightning
 import torch
@@ -129,7 +131,27 @@ def save_horizon_metrics(experiment_path, rows, summary):
     return csv_path, json_path
 
 
-def experiment_matches_request(experiment_path, requested_args):
+def requested_cli_names(argv):
+    names = set()
+    aliases = {"-N": "model_type", "-r": "run_id", "-d": "gpu_id", "-e": "epochs"}
+    for item in argv[1:]:
+        if item in aliases:
+            names.add(aliases[item])
+        elif item.startswith("--"):
+            names.add(item.split("=", maxsplit=1)[0].lstrip("-").replace("-", "_"))
+    return names
+
+
+def _matches_if_requested(loaded, requested_args, requested_filters, name):
+    if name not in requested_filters:
+        return True
+    requested_value = getattr(requested_args, name, None)
+    if requested_value in (None, ""):
+        return True
+    return getattr(loaded, name, None) == requested_value
+
+
+def experiment_matches_request(experiment_path, requested_args, requested_filters):
     args_path = os.path.join(experiment_path, "args.txt")
     if not os.path.isfile(args_path):
         return False
@@ -140,15 +162,13 @@ def experiment_matches_request(experiment_path, requested_args):
     except Exception:
         return False
 
-    if (
-        getattr(requested_args, "dataset", None)
-        and loaded.dataset != requested_args.dataset
-    ):
-        return False
+    for name in ("dataset", "model_type", "history_length", "unroll_length"):
+        if not _matches_if_requested(loaded, requested_args, requested_filters, name):
+            return False
     return True
 
 
-def find_latest_experiment(resources_path, requested_args):
+def find_latest_experiment(resources_path, requested_args, requested_filters):
     experiments = sorted(
         glob.glob(os.path.join(resources_path, "experiments", "*/")),
         key=os.path.getctime,
@@ -157,14 +177,47 @@ def find_latest_experiment(resources_path, requested_args):
     matching = [
         experiment_path
         for experiment_path in experiments
-        if experiment_matches_request(experiment_path, requested_args)
+        if experiment_matches_request(experiment_path, requested_args, requested_filters)
     ]
     if matching:
         return matching[0]
     raise FileNotFoundError(
         "No matching experiment with checkpoints found for "
-        f"dataset={requested_args.dataset}. Train a matching model first."
+        f"dataset={requested_args.dataset}, model_type={requested_args.model_type}, "
+        f"history_length={requested_args.history_length}, "
+        f"unroll_length={requested_args.unroll_length}. Train a matching model first."
     )
+
+
+def find_checkpoint(experiment_path):
+    experiment_dir = Path(experiment_path).resolve()
+    checkpoint_dir = experiment_dir / "checkpoints"
+    summary_path = experiment_dir / "train_summary.json"
+
+    if summary_path.is_file():
+        with open(summary_path, "r") as file:
+            summary = json.load(file)
+        best_model_path = summary.get("best_model_path")
+        if best_model_path:
+            best_path = Path(best_model_path).resolve()
+            if best_path.is_file() and checkpoint_dir in best_path.parents:
+                return str(best_path)
+
+    checkpoint_paths = glob.glob(str(checkpoint_dir / "*.pth"))
+    if not checkpoint_paths:
+        raise FileNotFoundError(f"No checkpoints found under {experiment_path}")
+
+    model_paths = [
+        path for path in checkpoint_paths if os.path.basename(path) != "last_model.pth"
+    ]
+
+    def checkpoint_score(path):
+        match = re.search(r"best_valid_loss=([0-9.]+)", os.path.basename(path))
+        return float(match.group(1)) if match else float("inf")
+
+    if model_paths and any(checkpoint_score(path) < float("inf") for path in model_paths):
+        return min(model_paths, key=checkpoint_score)
+    return max(model_paths or checkpoint_paths, key=os.path.getctime)
 
 
 def move_batch_to_device(batch, device):
@@ -174,29 +227,72 @@ def move_batch_to_device(batch, device):
     }
 
 
-def run_prediction(model, dataloaders, device):
+def max_predict_batches(args):
+    limit = getattr(args, "limit_predict_batches", 0)
+    if isinstance(limit, float):
+        if limit <= 0:
+            return None
+        if limit < 1:
+            raise ValueError("--limit_predict_batches must be an integer for eval.")
+        return int(limit)
+    if limit <= 0:
+        return None
+    return int(limit)
+
+
+def run_prediction(model, dataloaders, device, max_batches=None):
     model.to(device)
     model.eval()
-    pred_futures = []
-    y_futures = []
     losses = []
+    metric_sums = None
+    sample_count = 0
+    seen_batches = 0
 
     with torch.no_grad():
         for dataloader in dataloaders:
             for batch_idx, batch in enumerate(dataloader):
                 batch = move_batch_to_device(batch, device)
                 output = model.predict_step(batch, batch_idx)
-                pred_futures.append(output["pred_future"].cpu())
-                y_futures.append(output["y_future"].cpu())
-                losses.append(output["loss"].cpu())
+                pred_future = output["pred_future"].float()
+                y_future = output["y_future"].float()
+                batch_rows = compute_horizon_metrics(pred_future, y_future)
+                batch_size = pred_future.shape[0]
 
-    pred_future = torch.cat(pred_futures, dim=0)
-    y_future = torch.cat(y_futures, dim=0)
+                if metric_sums is None:
+                    metric_sums = {
+                        metric: torch.zeros(len(batch_rows), dtype=torch.float64)
+                        for metric in ("E_p", "E_v", "E_q", "E_omega")
+                    }
+                for idx, row in enumerate(batch_rows):
+                    for metric in metric_sums:
+                        metric_sums[metric][idx] += row[metric] * batch_size
+
+                sample_count += batch_size
+                losses.append(output["loss"].detach().cpu())
+                seen_batches += 1
+                if max_batches is not None and seen_batches >= max_batches:
+                    break
+            if max_batches is not None and seen_batches >= max_batches:
+                break
+
     avg_loss = torch.stack(losses).mean() if losses else torch.tensor(float("nan"))
-    return pred_future, y_future, avg_loss
+    if metric_sums is None or sample_count == 0:
+        raise RuntimeError("No prediction batches were evaluated.")
+
+    rows = []
+    for horizon_idx in range(len(next(iter(metric_sums.values())))):
+        row = {"horizon": horizon_idx + 1}
+        for metric, values in metric_sums.items():
+            row[metric] = float(values[horizon_idx] / sample_count)
+        rows.append(row)
+    return rows, avg_loss, sample_count, seen_batches
 
 
 def main(args, resources_path, data_path, experiment_path, model_path):
+    args.experiment_path = experiment_path
+    args.wandb_mode = os.environ.get("WANDB_MODE", getattr(args, "wandb_mode", "online"))
+    os.environ["WANDB_MODE"] = args.wandb_mode
+
     device_config = select_device(args.accelerator, args.gpu_id, args.num_devices)
     args.device = str(device_config["device"])
     args.resolved_accelerator = device_config["resolved"]
@@ -249,14 +345,16 @@ def main(args, resources_path, data_path, experiment_path, model_path):
     state_dict = checkpoint["state_dict"] if "state_dict" in checkpoint else checkpoint
     model.load_state_dict(state_dict)
 
-    pred_future, y_future, avg_loss = run_prediction(
-        model, test_dataloaders, device_config["device"]
+    rows, avg_loss, sample_count, seen_batches = run_prediction(
+        model,
+        test_dataloaders,
+        device_config["device"],
+        max_batches=max_predict_batches(args),
     )
     print("Average rollout loss:", float(avg_loss))
-    print("pred_future shape:", tuple(pred_future.shape))
-    print("y_future shape:", tuple(y_future.shape))
+    print("Evaluated samples:", sample_count)
+    print("Evaluated batches:", seen_batches)
 
-    rows = compute_horizon_metrics(pred_future, y_future)
     requested_horizons = parse_eval_horizons(
         getattr(args, "eval_horizons", "1,10,25,50")
     )
@@ -269,7 +367,7 @@ def main(args, resources_path, data_path, experiment_path, model_path):
             "unroll_length": args.unroll_length,
         }
     )
-    save_horizon_metrics(experiment_path, rows, summary)
+    csv_path, json_path = save_horizon_metrics(experiment_path, rows, summary)
 
     wandb_logger.experiment.config.update(vars(args))
     wandb_logger.experiment.config.update({"evaluated_checkpoint": model_path})
@@ -278,12 +376,13 @@ def main(args, resources_path, data_path, experiment_path, model_path):
         experiment_path,
         artifact_prefix=f"eval-{args.dataset}-{args.model_type}",
         include_checkpoints=False,
-        extra_files=[model_path],
+        extra_files=[model_path, csv_path, json_path],
     )
     _ = csv_logger
 
 
 if __name__ == "__main__":
+    requested_filters = requested_cli_names(sys.argv)
     requested_args = parse_args()
     requested_accelerator = requested_args.accelerator
 
@@ -296,11 +395,13 @@ if __name__ == "__main__":
 
     folder_path = "/".join(sys.path[0].split("/")[:-1]) + "/"
     resources_path = folder_path + "resources/"
-    experiment_path = find_latest_experiment(resources_path, requested_args)
-    model_path = max(
-        glob.glob(os.path.join(experiment_path, "checkpoints", "*.pth")),
-        key=os.path.getctime,
-    )
+    if requested_args.experiment_path:
+        experiment_path = os.path.abspath(requested_args.experiment_path)
+    else:
+        experiment_path = find_latest_experiment(
+            resources_path, requested_args, requested_filters
+        )
+    model_path = find_checkpoint(experiment_path)
 
     print("Experiment path:", experiment_path)
     print("Evaluating Dynamics model:", model_path)
@@ -308,6 +409,10 @@ if __name__ == "__main__":
     args = load_args(os.path.join(experiment_path, "args.txt"))
     args.accelerator = requested_accelerator
     args.eval_horizons = getattr(requested_args, "eval_horizons", "1,10,25,50")
+    args.wandb_mode = getattr(requested_args, "wandb_mode", getattr(args, "wandb_mode", "online"))
+    args.eval_batch_size = getattr(requested_args, "eval_batch_size", 0)
+    if args.eval_batch_size:
+        args.batch_size = args.eval_batch_size
     if not hasattr(args, "nanodrone_raw_path"):
         args.nanodrone_raw_path = requested_args.nanodrone_raw_path
     if not hasattr(args, "lambda_p"):

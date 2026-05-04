@@ -5,10 +5,28 @@ FULL_STATE_DATASETS = ["neurobemfullstate", "pitcnfullstate", "nanodronefullstat
 MODEL_TYPES = ["mlp", "lstm", "gru", "tcn", "tcnlstm", "grutcn"]
 
 
+def str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    value = str(value).strip().lower()
+    if value in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got {value!r}")
+
+
 def int_list(value):
     if isinstance(value, list):
         return value
     return [int(element) for element in str(value).split(",") if element != ""]
+
+
+def int_or_float(value):
+    value = str(value)
+    if "." in value:
+        return float(value)
+    return int(value)
 
 
 def parse_args():
@@ -30,6 +48,7 @@ def parse_args():
     parser.add_argument("--num_devices", type=int, default=1)
     parser.add_argument("-e", "--epochs", type=int, default=10000)
     parser.add_argument("-b", "--batch_size", type=int, default=128)
+    parser.add_argument("--eval_batch_size", type=int, default=0)
     parser.add_argument("-s", "--shuffle", type=bool, default=False)
     parser.add_argument("-n", "--num_workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=10)
@@ -49,6 +68,7 @@ def parse_args():
     parser.add_argument("--warmup_steps", type=int, default=10000)
     parser.add_argument("--cosine_steps", type=int, default=30000)
     parser.add_argument("--gradient_clip_val", type=float, default=1.0)
+    parser.add_argument("--accumulate_grad_batches", type=int, default=1)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--adam_beta1", type=float, default=0.9)
     parser.add_argument("--adam_beta2", type=float, default=0.999)
@@ -63,6 +83,12 @@ def parse_args():
     parser.add_argument("--save_freq", type=int, default=50)
     parser.add_argument("--plot_freq", type=int, default=20)
     parser.add_argument("--val_freq", type=int, default=1)
+    parser.add_argument("--limit_train_batches", type=int_or_float, default=1.0)
+    parser.add_argument("--limit_val_batches", type=int_or_float, default=1.0)
+    parser.add_argument("--limit_predict_batches", type=int_or_float, default=0)
+    parser.add_argument("--early_stopping", type=str_to_bool, default=False)
+    parser.add_argument("--early_stopping_patience", type=int, default=300)
+    parser.add_argument("--early_stopping_min_delta", type=float, default=1e-5)
 
     parser.add_argument("--sampling_frequency", type=int, default=100)
     parser.add_argument("--unroll_length", type=int, default=2)
@@ -77,6 +103,13 @@ def parse_args():
         default="/Users/lixiang/Developer/nanodroneclone",
     )
     parser.add_argument("--eval_horizons", type=str, default="1,10,25,50")
+    parser.add_argument("--experiment_path", type=str, default="")
+    parser.add_argument(
+        "--wandb_mode",
+        type=str,
+        default="online",
+        choices=["online", "offline", "disabled"],
+    )
 
     return parser.parse_args()
 
