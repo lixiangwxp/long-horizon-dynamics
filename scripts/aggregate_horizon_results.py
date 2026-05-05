@@ -116,11 +116,16 @@ def read_status(path):
     return {key: value for key, value in values.items() if value not in ("", None)}
 
 
+def iter_clean_csv_lines(path):
+    with open(path, "r", newline="", errors="replace") as file:
+        for line in file:
+            yield line.replace("\x00", "")
+
+
 def read_horizon_metrics(path):
     if not path.is_file():
         return []
-    with open(path, "r", newline="") as file:
-        return list(csv.DictReader(file))
+    return list(csv.DictReader(iter_clean_csv_lines(path)))
 
 
 def read_latest_metric(experiment_dir, metric_name):
@@ -129,17 +134,16 @@ def read_latest_metric(experiment_dir, metric_name):
     )
     values = []
     for path in metrics_paths:
-        with open(path, "r", newline="") as file:
-            for row in csv.DictReader(file):
-                raw_value = row.get(metric_name)
-                if raw_value in (None, ""):
-                    continue
-                try:
-                    value = float(raw_value)
-                except ValueError:
-                    continue
-                if math.isfinite(value):
-                    values.append(value)
+        for row in csv.DictReader(iter_clean_csv_lines(path)):
+            raw_value = row.get(metric_name)
+            if raw_value in (None, ""):
+                continue
+            try:
+                value = float(raw_value)
+            except ValueError:
+                continue
+            if math.isfinite(value):
+                values.append(value)
     if not values:
         return ""
     if metric_name == "best_valid_loss":
