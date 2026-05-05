@@ -104,6 +104,7 @@ def parse_args():
     )
     parser.add_argument("--eval_horizons", type=str, default="1,10,25,50")
     parser.add_argument("--experiment_path", type=str, default="")
+    parser.add_argument("--resume_from_checkpoint", type=str, default="")
     parser.add_argument(
         "--wandb_mode",
         type=str,

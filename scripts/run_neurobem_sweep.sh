@@ -221,6 +221,19 @@ with open(path, "w") as file:
 PY
 }
 
+status_success() {
+  local path="$1"
+  [ -f "$path" ] || return 1
+  "$PYTHON" - "$path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as file:
+    payload = json.load(file)
+raise SystemExit(0 if payload.get("status") == "success" else 1)
+PY
+}
+
 aggregate_results() {
   "$PYTHON" "$SCRIPT_DIR/aggregate_horizon_results.py" \
     --experiments-root "$SWEEP_ROOT" \
@@ -274,6 +287,12 @@ run_train_attempt() {
   local accumulate="$5"
   local wandb_mode="$6"
   local train_log="$7"
+  local resume_checkpoint="${8:-}"
+  local resume_args=()
+
+  if [ -n "$resume_checkpoint" ]; then
+    resume_args=(--resume_from_checkpoint "$resume_checkpoint")
+  fi
 
   WANDB_MODE="$wandb_mode" WANDB_SILENT=true "$PYTHON" train.py \
     --dataset neurobemfullstate \
@@ -299,6 +318,7 @@ run_train_attempt() {
     --limit_predict_batches "$LIMIT_PREDICT_BATCHES" \
     --wandb_mode "$wandb_mode" \
     --experiment_path "$exp_dir" \
+    "${resume_args[@]}" \
     > "$train_log" 2>&1
 }
 
@@ -334,7 +354,16 @@ run_config() {
   local eval_log=""
   local used_batch=""
   local used_accumulate=""
+  local resume_checkpoint=""
   local wandb_mode
+
+  if status_success "$status_path"; then
+    append_report ""
+    append_report "### $exp_name"
+    append_report "- Skipped existing successful run: \`$(date -Is)\`"
+    aggregate_results || true
+    return 0
+  fi
 
   mkdir -p "$exp_dir/logs"
   wandb_mode="$(initial_wandb_mode)"
@@ -342,6 +371,11 @@ run_config() {
   append_report "### $exp_name"
   append_report "- Started: \`$(date -Is)\`"
   append_report "- Initial W&B mode: \`$wandb_mode\`"
+
+  if [ -f "$exp_dir/checkpoints/last_model.pth" ]; then
+    resume_checkpoint="$exp_dir/checkpoints/last_model.pth"
+    append_report "- Resume checkpoint: \`$resume_checkpoint\`"
+  fi
 
   for idx in "${!BATCH_SIZES[@]}"; do
     local batch_size="${BATCH_SIZES[$idx]}"
@@ -354,7 +388,7 @@ run_config() {
       append_report "- Train attempt $retry_count: batch=\`$batch_size\`, accumulate=\`$accumulate\`, wandb=\`$wandb_mode\`"
 
       set +e
-      run_train_attempt "$model" "$history" "$exp_dir" "$batch_size" "$accumulate" "$wandb_mode" "$train_log"
+      run_train_attempt "$model" "$history" "$exp_dir" "$batch_size" "$accumulate" "$wandb_mode" "$train_log" "$resume_checkpoint"
       local exit_code=$?
       set -e
 
@@ -450,7 +484,15 @@ run_config() {
   return 1
 }
 
-init_report
+if [ -f "$REPORT" ]; then
+  append_report ""
+  append_report "## Resume"
+  append_report "- Resumed at: \`$(date -Is)\`"
+  append_report "- OOM fallback batches: \`${BATCH_SIZES[*]}\`"
+  append_report "- OOM fallback accumulation: \`${ACCUM_STEPS[*]}\`"
+else
+  init_report
+fi
 append_report "- Code directory: \`$REPO_ROOT\`"
 append_report "- Python: \`$($PYTHON --version 2>&1)\`"
 

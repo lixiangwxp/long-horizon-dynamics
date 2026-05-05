@@ -153,7 +153,15 @@ def main(args, resources_path, data_path, experiment_path):
     if trainer.is_global_zero:
         wandb_logger.experiment.config.update(vars(args))
 
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+    ckpt_path = args.resume_from_checkpoint or None
+    if ckpt_path:
+        print("Resuming from checkpoint:", ckpt_path)
+    trainer.fit(
+        model,
+        train_dataloaders=train_loader,
+        val_dataloaders=valid_loader,
+        ckpt_path=ckpt_path,
+    )
 
     if trainer.is_global_zero:
         train_summary = {
