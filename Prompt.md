@@ -51,6 +51,9 @@ Last updated: 2026-05-06 CST.
 - Fixed non-finite validation handling:
   - `scripts/dynamics_learning/lighting.py` now propagates non-finite validation loss into `best_valid_loss`, so early stopping can stop NaN runs.
   - `scripts/run_neurobem_sweep.sh` avoids resuming from `last_model.pth` if the latest train log contains non-finite loss, and writes rerun logs without overwriting old logs.
+- Updated `scripts/sync_to_gpu.sh` to exclude `resources/experiments/` by default.
+  - Code sync from Mac to `gpu4060` must not overwrite remote experiment outputs.
+  - Pull results back from remote with a separate remote-to-Mac sync command.
 
 ## Completed Results Snapshot
 
@@ -99,6 +102,10 @@ Source: remote `horizon_results.csv`, read on 2026-05-06.
   - Action: changed validation epoch handling to propagate non-finite validation loss to `best_valid_loss`.
   - Action: changed sweep script to avoid resuming from a latest log containing non-finite loss and to preserve old logs with rerun suffixes.
   - Result: `tcn_H1` now has `status=success`; no need to rerun it.
+- A Mac-to-remote code sync can overwrite aggregate result files if `resources/experiments/` is not excluded.
+  - Observation on 2026-05-06: remote per-config result directories still had 9 successful configs, but aggregate `horizon_results.csv` had only 6 rows after sync.
+  - Action: excluded `resources/experiments/` from `scripts/sync_to_gpu.sh`.
+  - Follow-up: regenerate or pull remote aggregate results from per-config summaries when needed.
 
 ## Commands To Remember
 

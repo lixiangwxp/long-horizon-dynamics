@@ -81,6 +81,7 @@ RSYNC_ARGS=(
   --exclude='logs/'
   --exclude='log/'
   --exclude='*.log'
+  --exclude='resources/experiments/'
   --exclude='.DS_Store'
 )
 
