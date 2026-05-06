@@ -280,7 +280,9 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
             return
 
         avg_loss = torch.stack(self.validation_step_outputs).mean()
-        if avg_loss < self.best_valid_loss.to(avg_loss.device):
+        if not torch.isfinite(avg_loss):
+            self.best_valid_loss = avg_loss.detach()
+        elif avg_loss < self.best_valid_loss.to(avg_loss.device):
             self.best_valid_loss = avg_loss.detach()
         self.log(
             "best_valid_loss",

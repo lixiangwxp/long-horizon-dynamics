@@ -279,6 +279,38 @@ is_wandb_log() {
   grep -Eiq 'api_key not configured|wandb.errors|CommError|Network error|network|timed out|timeout|403|401' "$1"
 }
 
+has_nonfinite_loss_log() {
+  [ -f "$1" ] || return 1
+  grep -Eiq '(^|[^[:alpha:]])(train|valid|best_valid)_loss[^=]*=nan|loss[^=]*=nan|nan\.0' "$1"
+}
+
+latest_train_log() {
+  local exp_dir="$1"
+  [ -d "$exp_dir/logs" ] || return 0
+  find "$exp_dir/logs" -maxdepth 1 -type f -name 'train_attempt_*.log' \
+    -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n 1 | cut -d' ' -f2-
+}
+
+unique_log_path() {
+  local path="$1"
+  if [ ! -e "$path" ]; then
+    echo "$path"
+    return 0
+  fi
+
+  local stem="${path%.*}"
+  local ext=".${path##*.}"
+  if [ "$stem" = "$path" ]; then
+    ext=""
+  fi
+
+  local idx=2
+  while [ -e "${stem}_rerun${idx}${ext}" ]; do
+    idx=$((idx + 1))
+  done
+  echo "${stem}_rerun${idx}${ext}"
+}
+
 run_train_attempt() {
   local model="$1"
   local history="$2"
@@ -355,6 +387,7 @@ run_config() {
   local used_batch=""
   local used_accumulate=""
   local resume_checkpoint=""
+  local latest_log=""
   local wandb_mode
 
   if status_success "$status_path"; then
@@ -373,8 +406,13 @@ run_config() {
   append_report "- Initial W&B mode: \`$wandb_mode\`"
 
   if [ -f "$exp_dir/checkpoints/last_model.pth" ]; then
-    resume_checkpoint="$exp_dir/checkpoints/last_model.pth"
-    append_report "- Resume checkpoint: \`$resume_checkpoint\`"
+    latest_log="$(latest_train_log "$exp_dir")"
+    if [ -n "$latest_log" ] && has_nonfinite_loss_log "$latest_log"; then
+      append_report "- Did not resume from \`last_model.pth\` because latest train log has non-finite loss: \`$latest_log\`"
+    else
+      resume_checkpoint="$exp_dir/checkpoints/last_model.pth"
+      append_report "- Resume checkpoint: \`$resume_checkpoint\`"
+    fi
   fi
 
   for idx in "${!BATCH_SIZES[@]}"; do
@@ -384,7 +422,7 @@ run_config() {
 
     while [ "$attempt_done" -eq 0 ]; do
       retry_count=$((retry_count + 1))
-      train_log="$exp_dir/logs/train_attempt_${retry_count}_b${batch_size}_a${accumulate}_${wandb_mode}.log"
+      train_log="$(unique_log_path "$exp_dir/logs/train_attempt_${retry_count}_b${batch_size}_a${accumulate}_${wandb_mode}.log")"
       append_report "- Train attempt $retry_count: batch=\`$batch_size\`, accumulate=\`$accumulate\`, wandb=\`$wandb_mode\`"
 
       set +e
@@ -439,7 +477,7 @@ run_config() {
 
   local eval_exit=1
   for eval_batch in "$used_batch" 32 16; do
-    eval_log="$exp_dir/logs/eval_${wandb_mode}_b${eval_batch}.log"
+    eval_log="$(unique_log_path "$exp_dir/logs/eval_${wandb_mode}_b${eval_batch}.log")"
     append_report "- Eval attempt: batch=\`$eval_batch\`, wandb=\`$wandb_mode\`"
     set +e
     run_eval_attempt "$exp_dir" "$wandb_mode" "$eval_log" "$eval_batch"
