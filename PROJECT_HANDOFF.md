@@ -440,3 +440,87 @@ ps -eo pid,ppid,stat,etime,cmd | grep -E "python|train.py|run_neurobem" | grep -
 - 不要把 W&B key 写进代码或文档。
 - 不要在远端手改代码后忘记同步回 Mac。
 - 不要重新跑已经 `success` 的配置，除非明确要做复现实验。
+
+## 16. 2026-05-07 当前状态快照
+
+更新时间：2026-05-07 10:59 CST。
+
+这个聊天线程已经很长，Codex App 多次触发“上下文已自动压缩”，并出现过：
+
+```text
+Error running remote compact task: stream disconnected before completion
+```
+
+这通常说明当前聊天上下文太重，或者压缩请求在网络/服务端中途断流。它不代表远端 4060 训练挂了。远端训练跑在 `tmux` 里，只要 `tmux neurobem_sweep`、`run_neurobem_sweep.sh` 和对应的 `python train.py` 进程还在，训练就还在继续。
+
+建议后续开一个新的 Codex 聊天框接手。新聊天第一句话可以直接写：
+
+```text
+请先阅读 long-horizon-dynamics 仓库里的 PROJECT_HANDOFF.md，然后继续监控 neurobem_sweep。不要删除文件，优先只读巡检，必要时按文档恢复。
+```
+
+当前远端状态：
+
+- 远端主机：`gpu4060`，机器名 `DESKTOP-0R0T1BO`。
+- 远端仓库：`/home/ubuntu/Developer/long-horizon-dynamics`。
+- sweep root：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/neurobem_fullstate_fast_20260504-154358_wandb_online`。
+- tmux session：`neurobem_sweep`，仍然存在。
+- 当前运行配置：`tcn_H20_F50_seed10`。
+- 当前训练命令核心参数：`batch_size=128`，`accumulate_grad_batches=4`，`epochs=200`，`patience=20`，`limit_train_batches=0.25`，`limit_val_batches=0.5`，`wandb_mode=online`。
+- 最新日志：`tcn_H20_F50_seed10/logs/train_attempt_1_b128_a4_online.log`。
+- 最新日志进度：epoch 106，约 60%，`valid_loss_epoch=0.606`，`best_valid_loss=0.586`。
+- GPU 状态：RTX 4060，约 50C，1294/8188 MiB，利用率约 38%。
+- 最新日志没有发现 `Traceback`、`CUDA out of memory`、`RuntimeError`、`nan`、`inf`。
+
+当前结果状态：
+
+- `horizon_results.csv` 当前有 10 行成功结果。
+- `success=10`，`bad_or_missing=0`。
+- 目前已有 10 个 `horizon_summary.json`、10 个 `horizon_metrics.csv`、10 个 `status.json`。
+- 已成功配置：
+  - `mlp_H1_F50_seed10`
+  - `mlp_H10_F50_seed10`
+  - `mlp_H20_F50_seed10`
+  - `mlp_H50_F50_seed10`
+  - `gru_H1_F50_seed10`
+  - `gru_H10_F50_seed10`
+  - `gru_H20_F50_seed10`
+  - `gru_H50_F50_seed10`
+  - `tcn_H1_F50_seed10`
+  - `tcn_H10_F50_seed10`
+
+已经成功的 H1 配置不需要重跑。当前脚本本身会跳过 `status.json` 里已经标记为 `success` 的配置；除非明确要做复现实验，不要重新跑已成功配置。
+
+接手后建议第一轮只读巡检：
+
+```bash
+ssh gpu4060
+tmux ls
+/usr/lib/wsl/lib/nvidia-smi
+ps -eo pid,ppid,stat,etime,pcpu,pmem,cmd | grep -E "python train.py|python eval.py|run_neurobem_sweep|tmux" | grep -v grep
+```
+
+如果要看当前训练画面：
+
+```bash
+ssh gpu4060
+tmux attach -t neurobem_sweep
+```
+
+退出 tmux 画面但不停止训练：先按 `Ctrl-b`，松开后按 `d`。
+
+如果远端 IP 变了，只需要在 Mac 上改 `~/.ssh/config` 里 `Host gpu4060` 对应的 `HostName`，例如：
+
+```sshconfig
+Host gpu4060
+  HostName 192.168.1.xxx
+  User ubuntu
+```
+
+然后继续用：
+
+```bash
+ssh gpu4060
+```
+
+不要因为换 IP 重建实验目录，也不要重新跑已经成功的配置。
