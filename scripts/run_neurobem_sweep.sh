@@ -291,6 +291,18 @@ latest_train_log() {
     -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n 1 | cut -d' ' -f2-
 }
 
+latest_eval_log() {
+  local exp_dir="$1"
+  [ -d "$exp_dir/logs" ] || return 0
+  find "$exp_dir/logs" -maxdepth 1 -type f -name 'eval_*.log' \
+    -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n 1 | cut -d' ' -f2-
+}
+
+eval_outputs_exist() {
+  local exp_dir="$1"
+  [ -s "$exp_dir/horizon_metrics.csv" ] && [ -s "$exp_dir/horizon_summary.json" ]
+}
+
 unique_log_path() {
   local path="$1"
   if [ ! -e "$path" ]; then
@@ -394,6 +406,21 @@ run_config() {
     append_report ""
     append_report "### $exp_name"
     append_report "- Skipped existing successful run: \`$(date -Is)\`"
+    aggregate_results || true
+    return 0
+  fi
+
+  if eval_outputs_exist "$exp_dir"; then
+    mkdir -p "$exp_dir/logs"
+    wandb_mode="$(initial_wandb_mode)"
+    train_log="$(latest_train_log "$exp_dir")"
+    eval_log="$(latest_eval_log "$exp_dir")"
+    append_report ""
+    append_report "### $exp_name"
+    append_report "- Recovered existing eval outputs without success status: \`$(date -Is)\`"
+    append_report "- Marked success from existing horizon metrics and summary."
+    write_status "$status_path" "success" "recovered existing eval outputs after interrupted eval exit" 0 \
+      "${BATCH_SIZES[0]}" "${ACCUM_STEPS[0]}" "$wandb_mode" "$train_log" "$eval_log"
     aggregate_results || true
     return 0
   fi
