@@ -78,6 +78,19 @@ def parse_args():
     parser.add_argument("--lambda_v", type=float, default=1.0)
     parser.add_argument("--lambda_q", type=float, default=1.0)
     parser.add_argument("--lambda_omega", type=float, default=1.0)
+    parser.add_argument("--input_noise_std", type=float, default=0.0)
+    parser.add_argument("--input_noise_loss_weight", type=float, default=0.0)
+    parser.add_argument("--feedback_noise_std", type=float, default=0.0)
+    parser.add_argument("--rollout_loss_tail_weight", type=float, default=1.0)
+    parser.add_argument("--physics_loss_weight", type=float, default=0.0)
+    parser.add_argument("--physics_kinematic_weight", type=float, default=1.0)
+    parser.add_argument("--physics_quat_norm_weight", type=float, default=0.01)
+    parser.add_argument("--physics_v_smooth_weight", type=float, default=0.0)
+    parser.add_argument("--physics_omega_smooth_weight", type=float, default=0.0)
+    parser.add_argument("--physics_reliability_scale", type=float, default=10.0)
+    parser.add_argument("--physics_slack_margin", type=float, default=0.0)
+    parser.add_argument("--multi_step_delta_vomega", type=str_to_bool, default=False)
+    parser.add_argument("--multi_step_kinematic_update", type=str_to_bool, default=False)
 
     parser.add_argument("-p", "--plot", type=bool, default=False)
     parser.add_argument("--save_freq", type=int, default=50)
@@ -89,6 +102,10 @@ def parse_args():
     parser.add_argument("--early_stopping", type=str_to_bool, default=False)
     parser.add_argument("--early_stopping_patience", type=int, default=300)
     parser.add_argument("--early_stopping_min_delta", type=float, default=1e-5)
+    parser.add_argument("--swa", type=str_to_bool, default=False)
+    parser.add_argument("--swa_lrs", type=float, default=5e-5)
+    parser.add_argument("--swa_epoch_start", type=float, default=0.6)
+    parser.add_argument("--swa_annealing_epochs", type=int, default=5)
 
     parser.add_argument("--sampling_frequency", type=int, default=100)
     parser.add_argument("--unroll_length", type=int, default=2)
@@ -104,7 +121,9 @@ def parse_args():
     )
     parser.add_argument("--eval_horizons", type=str, default="1,10,25,50")
     parser.add_argument("--experiment_path", type=str, default="")
+    parser.add_argument("--init_from_checkpoint", type=str, default="")
     parser.add_argument("--resume_from_checkpoint", type=str, default="")
+    parser.add_argument("--trainable_parameter_patterns", type=str, default="")
     parser.add_argument(
         "--wandb_mode",
         type=str,

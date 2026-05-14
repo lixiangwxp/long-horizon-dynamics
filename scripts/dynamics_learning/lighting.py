@@ -47,6 +47,21 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
         self.lambda_v = getattr(args, "lambda_v", 1.0)
         self.lambda_q = getattr(args, "lambda_q", 1.0)
         self.lambda_omega = getattr(args, "lambda_omega", 1.0)
+        self.input_noise_std = getattr(args, "input_noise_std", 0.0)
+        self.input_noise_loss_weight = getattr(args, "input_noise_loss_weight", 0.0)
+        self.feedback_noise_std = getattr(args, "feedback_noise_std", 0.0)
+        self.rollout_loss_tail_weight = getattr(args, "rollout_loss_tail_weight", 1.0)
+        self.physics_loss_weight = getattr(args, "physics_loss_weight", 0.0)
+        self.physics_kinematic_weight = getattr(args, "physics_kinematic_weight", 1.0)
+        self.physics_quat_norm_weight = getattr(args, "physics_quat_norm_weight", 0.01)
+        self.physics_v_smooth_weight = getattr(args, "physics_v_smooth_weight", 0.0)
+        self.physics_omega_smooth_weight = getattr(
+            args, "physics_omega_smooth_weight", 0.0
+        )
+        self.physics_reliability_scale = getattr(
+            args, "physics_reliability_scale", 10.0
+        )
+        self.physics_slack_margin = getattr(args, "physics_slack_margin", 0.0)
 
         self.model = get_model(args, input_size, output_size)
         self.best_valid_loss = torch.tensor(float("inf"))
@@ -147,6 +162,7 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
         v_loss = torch.linalg.norm(pred[:, 3:6] - target[:, 3:6], dim=-1).mean()
         q_loss = self.orientation_error(pred[:, 6:10], target[:, 6:10]).mean()
         omega_loss = torch.linalg.norm(pred[:, 10:13] - target[:, 10:13], dim=-1).mean()
+        state_mse = ((pred - target) ** 2).sum(dim=-1).mean()
 
         loss = (
             self.lambda_p * p_loss
@@ -159,13 +175,75 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
             "v_loss": v_loss,
             "q_loss": q_loss,
             "omega_loss": omega_loss,
+            "state_mse": state_mse,
         }
 
-    def full_state_rollout(self, batch):
+    def normalize_state_quaternion(self, state):
+        q = self.quat_normalize(state[..., 6:10])
+        return torch.cat([state[..., :6], q, state[..., 10:]], dim=-1)
+
+    def add_state_noise(self, state, noise_std):
+        noisy_state = state + torch.randn_like(state) * noise_std
+        return self.normalize_state_quaternion(noisy_state)
+
+    def rollout_loss_weights(self, horizon, device, dtype, tail_weight):
+        weights = torch.linspace(1.0, tail_weight, horizon, device=device, dtype=dtype)
+        return weights / weights.sum()
+
+    def physics_regularization(self, x_t, x_next_pred, target):
+        dt = x_next_pred.new_tensor(1.0 / float(self.args.sampling_frequency))
+
+        pred_step = x_next_pred[:, 0:3] - x_t[:, 0:3]
+        pred_trap_step = 0.5 * dt * (x_t[:, 3:6] + x_next_pred[:, 3:6])
+        pred_kinematic = ((pred_step - pred_trap_step) ** 2).sum(dim=-1)
+
+        target_step = target[:, 0:3] - x_t[:, 0:3]
+        target_trap_step = 0.5 * dt * (x_t[:, 3:6] + target[:, 3:6])
+        target_kinematic = ((target_step - target_trap_step) ** 2).sum(dim=-1).detach()
+
+        slack = target_kinematic + self.physics_slack_margin
+        reliability = torch.exp(
+            -self.physics_reliability_scale * target_kinematic
+        ).detach()
+        kinematic_loss = (reliability * torch.relu(pred_kinematic - slack)).mean()
+
+        quat_norm_loss = (x_next_pred[:, 6:10].norm(dim=-1) - 1.0).square().mean()
+        v_smooth_loss = ((x_next_pred[:, 3:6] - x_t[:, 3:6]) ** 2).sum(dim=-1).mean()
+        omega_smooth_loss = (
+            (x_next_pred[:, 10:13] - x_t[:, 10:13]) ** 2
+        ).sum(dim=-1).mean()
+
+        physics_loss = (
+            self.physics_kinematic_weight * kinematic_loss
+            + self.physics_quat_norm_weight * quat_norm_loss
+            + self.physics_v_smooth_weight * v_smooth_loss
+            + self.physics_omega_smooth_weight * omega_smooth_loss
+        )
+        return physics_loss, {
+            "physics_kinematic_loss": kinematic_loss,
+            "physics_quat_norm_loss": quat_norm_loss,
+            "physics_v_smooth_loss": v_smooth_loss,
+            "physics_omega_smooth_loss": omega_smooth_loss,
+            "physics_reliability": reliability.mean(),
+        }
+
+    def full_state_rollout(
+        self,
+        batch,
+        feedback_noise_std=0.0,
+        rollout_loss_tail_weight=1.0,
+        physics_regularization=False,
+    ):
         x_hist_curr = batch["x_hist"].float()
         u_hist_curr = batch["u_hist"].float()
         u_roll = batch["u_roll"].float()
         y_future = batch["y_future"].float()
+        loss_weights = self.rollout_loss_weights(
+            self.args.unroll_length,
+            y_future.device,
+            y_future.dtype,
+            rollout_loss_tail_weight,
+        )
 
         total_loss = 0.0
         metrics = {
@@ -173,7 +251,19 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
             "v_loss": 0.0,
             "q_loss": 0.0,
             "omega_loss": 0.0,
+            "state_mse": 0.0,
         }
+        if physics_regularization:
+            metrics.update(
+                {
+                    "physics_loss": 0.0,
+                    "physics_kinematic_loss": 0.0,
+                    "physics_quat_norm_loss": 0.0,
+                    "physics_v_smooth_loss": 0.0,
+                    "physics_omega_smooth_loss": 0.0,
+                    "physics_reliability": 0.0,
+                }
+            )
         preds = []
 
         horizon = self.args.unroll_length
@@ -184,15 +274,32 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
 
             target = y_future[:, step]
             step_loss, step_metrics = self.full_state_loss(x_next_pred, target)
-            total_loss = total_loss + step_loss / horizon
+            step_weight = loss_weights[step]
+            total_loss = total_loss + step_weight * step_loss
             for key in metrics:
-                metrics[key] = metrics[key] + step_metrics[key] / horizon
+                if key in step_metrics:
+                    metrics[key] = metrics[key] + step_weight * step_metrics[key]
+
+            if physics_regularization:
+                physics_loss, physics_metrics = self.physics_regularization(
+                    x_hist_curr[:, -1], x_next_pred, target
+                )
+                metrics["physics_loss"] = (
+                    metrics["physics_loss"] + step_weight * physics_loss
+                )
+                for key, value in physics_metrics.items():
+                    metrics[key] = metrics[key] + step_weight * value
 
             preds.append(x_next_pred)
 
             if step < horizon - 1:
+                x_next_history = x_next_pred
+                if feedback_noise_std > 0.0:
+                    x_next_history = self.add_state_noise(
+                        x_next_history, feedback_noise_std
+                    )
                 x_hist_curr = torch.cat(
-                    [x_hist_curr[:, 1:, :], x_next_pred.unsqueeze(1)], dim=1
+                    [x_hist_curr[:, 1:, :], x_next_history.unsqueeze(1)], dim=1
                 )
                 u_next_for_history = u_roll[:, step + 1, :]
                 u_hist_curr = torch.cat(
@@ -203,8 +310,71 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
         pred_future = torch.stack(preds, dim=1)
         return pred_future, total_loss, metrics
 
+    def add_input_noise(self, batch):
+        noisy_batch = dict(batch)
+        noisy_batch["x_hist"] = self.add_state_noise(
+            batch["x_hist"], self.input_noise_std
+        )
+        noisy_batch["u_hist"] = batch["u_hist"] + torch.randn_like(
+            batch["u_hist"]
+        ) * self.input_noise_std
+        return noisy_batch
+
     def training_step(self, train_batch, batch_idx):
-        _, loss, metrics = self.full_state_rollout(train_batch)
+        _, loss, metrics = self.full_state_rollout(
+            train_batch,
+            feedback_noise_std=self.feedback_noise_std,
+            rollout_loss_tail_weight=self.rollout_loss_tail_weight,
+            physics_regularization=self.physics_loss_weight > 0.0,
+        )
+        train_objective = loss
+        log_train_objective = False
+        if self.physics_loss_weight > 0.0:
+            train_objective = train_objective + (
+                self.physics_loss_weight * metrics["physics_loss"]
+            )
+            log_train_objective = True
+            self.log(
+                "train_physics_loss",
+                metrics["physics_loss"],
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+            )
+            self.log(
+                "train_physics_kinematic_loss",
+                metrics["physics_kinematic_loss"],
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+            )
+            self.log(
+                "train_physics_reliability",
+                metrics["physics_reliability"],
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+            )
+        if self.input_noise_std > 0.0 and self.input_noise_loss_weight > 0.0:
+            noisy_batch = self.add_input_noise(train_batch)
+            _, noisy_loss, _ = self.full_state_rollout(noisy_batch)
+            train_objective = train_objective + self.input_noise_loss_weight * noisy_loss
+            log_train_objective = True
+            self.log(
+                "train_noisy_loss",
+                noisy_loss,
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+            )
+        if log_train_objective:
+            self.log(
+                "train_objective",
+                train_objective,
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+            )
         self.log(
             "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
@@ -224,7 +394,14 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
             on_epoch=True,
             logger=True,
         )
-        return loss
+        self.log(
+            "train_state_mse",
+            metrics["state_mse"],
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+        )
+        return train_objective
 
     def validation_step(self, valid_batch, batch_idx, dataloader_idx=0):
         _, loss, metrics = self.full_state_rollout(valid_batch)
@@ -248,6 +425,13 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
             on_epoch=True,
             logger=True,
         )
+        self.log(
+            "valid_state_mse",
+            metrics["state_mse"],
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+        )
         return loss
 
     def test_step(self, test_batch, batch_idx, dataloader_idx=0):
@@ -257,6 +441,7 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
         self.log("test_v_loss", metrics["v_loss"], on_step=True, logger=True)
         self.log("test_q_loss", metrics["q_loss"], on_step=True, logger=True)
         self.log("test_omega_loss", metrics["omega_loss"], on_step=True, logger=True)
+        self.log("test_state_mse", metrics["state_mse"], on_step=True, logger=True)
         return {
             "pred_future": pred_future.detach(),
             "y_future": test_batch["y_future"].detach(),

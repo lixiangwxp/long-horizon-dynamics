@@ -20,6 +20,8 @@ from train import resolve_output_size
 
 warnings.filterwarnings("ignore")
 
+HORIZON_METRICS = ["E_p", "E_v", "E_q", "E_omega", "MSE_x"]
+
 
 def parse_eval_horizons(value):
     if isinstance(value, str):
@@ -73,6 +75,7 @@ def compute_horizon_metrics(pred_future, y_future):
     omega_error = torch.linalg.norm(
         pred_future[:, :, 10:13] - y_future[:, :, 10:13], dim=-1
     ).mean(dim=0)
+    state_mse = ((pred_future - y_future) ** 2).sum(dim=-1).mean(dim=0)
 
     rows = []
     for horizon_idx in range(pred_future.shape[1]):
@@ -83,13 +86,13 @@ def compute_horizon_metrics(pred_future, y_future):
                 "E_v": float(v_error[horizon_idx].cpu()),
                 "E_q": float(q_error[horizon_idx].cpu()),
                 "E_omega": float(omega_error[horizon_idx].cpu()),
+                "MSE_x": float(state_mse[horizon_idx].cpu()),
             }
         )
     return rows
 
 
 def summarize_horizon_metrics(rows, requested_horizons):
-    metric_names = ["E_p", "E_v", "E_q", "E_omega"]
     summary = {}
     full_horizon = len(rows)
 
@@ -101,15 +104,16 @@ def summarize_horizon_metrics(rows, requested_horizons):
             )
             continue
         row = rows[horizon - 1]
-        summary[f"h={horizon}"] = {name: row[name] for name in metric_names}
+        summary[f"h={horizon}"] = {name: row[name] for name in HORIZON_METRICS}
 
     summary["mean_1_to_F"] = {
         name: float(sum(row[name] for row in rows) / full_horizon)
-        for name in metric_names
+        for name in HORIZON_METRICS
     }
     summary["sum_1_to_F"] = {
-        name: float(sum(row[name] for row in rows)) for name in metric_names
+        name: float(sum(row[name] for row in rows)) for name in HORIZON_METRICS
     }
+    summary["MSE_1_to_F"] = summary["mean_1_to_F"]["MSE_x"]
     return summary
 
 
@@ -117,7 +121,7 @@ def save_horizon_metrics(experiment_path, rows, summary):
     csv_path = os.path.join(experiment_path, "horizon_metrics.csv")
     with open(csv_path, "w", newline="") as file:
         writer = csv.DictWriter(
-            file, fieldnames=["horizon", "E_p", "E_v", "E_q", "E_omega"]
+            file, fieldnames=["horizon", *HORIZON_METRICS]
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -165,6 +169,9 @@ def experiment_matches_request(experiment_path, requested_args, requested_filter
     for name in ("dataset", "model_type", "history_length", "unroll_length"):
         if not _matches_if_requested(loaded, requested_args, requested_filters, name):
             return False
+    for name in ("multi_step_delta_vomega", "multi_step_kinematic_update"):
+        if not _matches_if_requested(loaded, requested_args, requested_filters, name):
+            return False
     return True
 
 
@@ -203,21 +210,56 @@ def find_checkpoint(experiment_path):
             if best_path.is_file() and checkpoint_dir in best_path.parents:
                 return str(best_path)
 
-    checkpoint_paths = glob.glob(str(checkpoint_dir / "*.pth"))
+    checkpoint_paths = sorted(checkpoint_dir.glob("*.pth"))
     if not checkpoint_paths:
         raise FileNotFoundError(f"No checkpoints found under {experiment_path}")
 
-    model_paths = [
-        path for path in checkpoint_paths if os.path.basename(path) != "last_model.pth"
-    ]
+    model_paths = [path for path in checkpoint_paths if path.name != "last_model.pth"]
 
-    def checkpoint_score(path):
-        match = re.search(r"best_valid_loss=([0-9.]+)", os.path.basename(path))
-        return float(match.group(1)) if match else float("inf")
+    def best_epoch_from_csv_logs():
+        def version_key(item):
+            match = re.search(r"version_(\\d+)", item.parent.name)
+            return int(match.group(1)) if match else -1
 
-    if model_paths and any(checkpoint_score(path) < float("inf") for path in model_paths):
-        return min(model_paths, key=checkpoint_score)
-    return max(model_paths or checkpoint_paths, key=os.path.getctime)
+        versions = sorted(
+            experiment_dir.glob("csv_logs/version_*/metrics.csv"),
+            key=version_key,
+        )
+        if not versions:
+            return None
+
+        metrics_path = versions[-1]
+        best_epoch = None
+        best_loss = None
+        with metrics_path.open() as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                loss_text = row.get("valid_loss_epoch")
+                if not loss_text:
+                    continue
+                epoch_text = row.get("epoch")
+                if epoch_text is None:
+                    continue
+                loss = float(loss_text)
+                epoch = int(float(epoch_text))
+                if best_loss is None or loss < best_loss:
+                    best_loss = loss
+                    best_epoch = epoch
+        return best_epoch
+
+    best_epoch = best_epoch_from_csv_logs()
+    if best_epoch is not None:
+        epoch_candidates = [
+            path
+            for path in model_paths
+            if f"epoch={best_epoch:02d}" in path.name or f"epoch={best_epoch}" in path.name
+        ]
+        if epoch_candidates:
+            return str(max(epoch_candidates, key=lambda item: item.stat().st_mtime))
+
+    if model_paths:
+        return str(max(model_paths, key=lambda item: item.stat().st_mtime))
+    return str(max(checkpoint_paths, key=lambda item: item.stat().st_mtime))
 
 
 def move_batch_to_device(batch, device):
@@ -243,7 +285,7 @@ def max_predict_batches(args):
 def run_prediction(model, dataloaders, device, max_batches=None):
     model.to(device)
     model.eval()
-    losses = []
+    loss_sum = 0.0
     metric_sums = None
     sample_count = 0
     seen_batches = 0
@@ -261,21 +303,21 @@ def run_prediction(model, dataloaders, device, max_batches=None):
                 if metric_sums is None:
                     metric_sums = {
                         metric: torch.zeros(len(batch_rows), dtype=torch.float64)
-                        for metric in ("E_p", "E_v", "E_q", "E_omega")
+                        for metric in HORIZON_METRICS
                     }
                 for idx, row in enumerate(batch_rows):
                     for metric in metric_sums:
                         metric_sums[metric][idx] += row[metric] * batch_size
 
                 sample_count += batch_size
-                losses.append(output["loss"].detach().cpu())
+                loss_sum += float(output["loss"].detach().cpu()) * batch_size
                 seen_batches += 1
                 if max_batches is not None and seen_batches >= max_batches:
                     break
             if max_batches is not None and seen_batches >= max_batches:
                 break
 
-    avg_loss = torch.stack(losses).mean() if losses else torch.tensor(float("nan"))
+    avg_loss = loss_sum / sample_count if sample_count else float("nan")
     if metric_sums is None or sample_count == 0:
         raise RuntimeError("No prediction batches were evaluated.")
 
@@ -285,7 +327,7 @@ def run_prediction(model, dataloaders, device, max_batches=None):
         for metric, values in metric_sums.items():
             row[metric] = float(values[horizon_idx] / sample_count)
         rows.append(row)
-    return rows, avg_loss, sample_count, seen_batches
+    return rows, torch.tensor(avg_loss), sample_count, seen_batches
 
 
 def main(args, resources_path, data_path, experiment_path, model_path):
@@ -420,6 +462,10 @@ if __name__ == "__main__":
         args.lambda_v = 1.0
         args.lambda_q = 1.0
         args.lambda_omega = 1.0
+    if not hasattr(args, "multi_step_delta_vomega"):
+        args.multi_step_delta_vomega = False
+    if not hasattr(args, "multi_step_kinematic_update"):
+        args.multi_step_kinematic_update = False
 
     data_path = os.path.join(resources_path, "data", args.dataset)
     check_folder_paths(

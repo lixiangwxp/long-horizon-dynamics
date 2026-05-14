@@ -59,6 +59,11 @@ def get_model(args, input_size, output_size):
             args.kernel_size,
             args.dropout,
             args.num_layers,
+            sampling_frequency=getattr(args, "sampling_frequency", 100),
+            multi_step_delta_vomega=getattr(args, "multi_step_delta_vomega", False),
+            multi_step_kinematic_update=getattr(
+                args, "multi_step_kinematic_update", False
+            ),
         ),
     }
 

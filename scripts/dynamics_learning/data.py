@@ -144,7 +144,7 @@ def load_dataset(mode, data_path, hdf5_file, args, num_workers, pin_memory):
     dataset = DynamicsDataset(mode, data_path, hdf5_file, args)
     loader_kwargs = {
         "batch_size": args.batch_size,
-        "shuffle": args.shuffle,
+        "shuffle": args.shuffle and mode == "training",
         "num_workers": num_workers,
         "pin_memory": pin_memory,
     }

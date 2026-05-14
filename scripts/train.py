@@ -6,6 +6,7 @@ import time
 import warnings
 
 import pytorch_lightning
+import torch
 
 from config import FULL_STATE_DATASETS, MODEL_TYPES, parse_args, save_args
 from dynamics_learning.data import load_dataset
@@ -40,6 +41,50 @@ def resolve_output_size(args):
             "full-state pipeline. Use --predictor_type full_state."
         )
     raise ValueError(f"Unsupported predictor_type: {args.predictor_type}")
+
+
+def apply_trainable_parameter_filter(model, pattern_text):
+    patterns = [item for item in pattern_text.split(",") if item]
+    if not patterns:
+        return []
+
+    trainable_names = []
+    for name, parameter in model.named_parameters():
+        is_trainable = any(pattern in name for pattern in patterns)
+        parameter.requires_grad = is_trainable
+        if is_trainable:
+            trainable_names.append(name)
+
+    print("Trainable parameter patterns:", patterns)
+    print("Trainable parameters:", trainable_names)
+    return trainable_names
+
+
+def compatible_checkpoint_state(model, state_dict):
+    model_state = model.state_dict()
+    compatible = {}
+    skipped = []
+    allow_shape_mismatch_substrings = (
+        "raw_token_pos",
+        "raw_token_adaptive_pos",
+    )
+    for key, value in state_dict.items():
+        if key in model_state and value.shape != model_state[key].shape:
+            if any(item in key for item in allow_shape_mismatch_substrings):
+                skipped.append(
+                    f"{key}: checkpoint {tuple(value.shape)} != model {tuple(model_state[key].shape)}"
+                )
+                continue
+            skipped.append(
+                f"{key}: checkpoint {tuple(value.shape)} != model {tuple(model_state[key].shape)}"
+            )
+            raise ValueError(
+                "Incompatible checkpoint state_dict: shape mismatch for a core parameter.\n"
+                f"{skipped[-1]}\n"
+                "Only positional embeddings are allowed to mismatch shape when expanding history."
+            )
+        compatible[key] = value
+    return compatible, skipped
 
 
 def main(args, resources_path, data_path, experiment_path):
@@ -96,6 +141,19 @@ def main(args, resources_path, data_path, experiment_path):
                 verbose=True,
             )
         )
+    if args.swa:
+        swa_epoch_start = (
+            int(args.swa_epoch_start)
+            if args.swa_epoch_start >= 1
+            else args.swa_epoch_start
+        )
+        callbacks.append(
+            pytorch_lightning.callbacks.StochasticWeightAveraging(
+                swa_lrs=args.swa_lrs,
+                swa_epoch_start=swa_epoch_start,
+                annealing_epochs=args.swa_annealing_epochs,
+            )
+        )
 
     train_dataset, train_loader = load_dataset(
         "training",
@@ -134,6 +192,21 @@ def main(args, resources_path, data_path, experiment_path):
         input_size=input_size,
         output_size=output_size,
         max_iterations=optimizer_steps_per_epoch * args.epochs,
+    )
+    if args.init_from_checkpoint:
+        print("Initializing model weights from checkpoint:", args.init_from_checkpoint)
+        checkpoint = torch.load(args.init_from_checkpoint, map_location="cpu")
+        state_dict = checkpoint.get("state_dict", checkpoint)
+        state_dict, skipped_shape_keys = compatible_checkpoint_state(model, state_dict)
+        if skipped_shape_keys:
+            print("Checkpoint skipped shape-mismatched keys:", skipped_shape_keys)
+        load_result = model.load_state_dict(state_dict, strict=False)
+        if load_result.missing_keys:
+            print("Checkpoint missing keys:", load_result.missing_keys)
+        if load_result.unexpected_keys:
+            print("Checkpoint unexpected keys:", load_result.unexpected_keys)
+    trainable_parameter_names = apply_trainable_parameter_filter(
+        model, args.trainable_parameter_patterns
     )
 
     trainer = pytorch_lightning.Trainer(
@@ -177,6 +250,13 @@ def main(args, resources_path, data_path, experiment_path):
             ),
             "early_stopping_patience": args.early_stopping_patience,
             "early_stopping_min_delta": args.early_stopping_min_delta,
+            "swa": args.swa,
+            "swa_lrs": args.swa_lrs,
+            "swa_epoch_start": args.swa_epoch_start,
+            "swa_annealing_epochs": args.swa_annealing_epochs,
+            "init_from_checkpoint": args.init_from_checkpoint,
+            "trainable_parameter_patterns": args.trainable_parameter_patterns,
+            "trainable_parameter_names": trainable_parameter_names,
             "limit_train_batches": args.limit_train_batches,
             "limit_val_batches": args.limit_val_batches,
             "limit_predict_batches": args.limit_predict_batches,
@@ -184,6 +264,13 @@ def main(args, resources_path, data_path, experiment_path):
             "accumulate_grad_batches": args.accumulate_grad_batches,
             "effective_batch_size": args.effective_batch_size,
             "wandb_mode": args.wandb_mode,
+            "physics_loss_weight": args.physics_loss_weight,
+            "physics_kinematic_weight": args.physics_kinematic_weight,
+            "physics_quat_norm_weight": args.physics_quat_norm_weight,
+            "physics_v_smooth_weight": args.physics_v_smooth_weight,
+            "physics_omega_smooth_weight": args.physics_omega_smooth_weight,
+            "physics_reliability_scale": args.physics_reliability_scale,
+            "physics_slack_margin": args.physics_slack_margin,
             "best_model_path": checkpoint_callback.best_model_path,
             "best_model_score": (
                 float(checkpoint_callback.best_model_score.cpu())
