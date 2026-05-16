@@ -1,13 +1,13 @@
 # 当前模型冲刺短状态
 
-最后更新：2026-05-16 21:16 CST。
+最后更新：2026-05-16 22:04 CST。
 
 用途：同一聊天窗口和 heartbeat 自动化优先读取本文件，避免反复完整读取 `Prompt.md` / `MODEL_DEV_HANDOFF.md` 造成上下文膨胀。只有新聊天、上下文压缩后状态不明、当前状态冲突、或需要历史复盘时，才读取完整交接文档。
 
 ## 当前 Active
 
 - 状态：active none。
-- 当前阶段：post-run decision pending。
+- 当前阶段：post-run paired-screening decision pending（reference compatibility blocker）。
 - 实验 id：`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1`
 - 代码 base：`main@818e18990b8bf1aee4e493d238d1d0f912936652`。本地 repo 启动前 clean；远端原 repo 仍保留旧 dirty 现场，因此本次正式训练使用 clean worktree `/home/ubuntu/Developer/long-horizon-dynamics_run_818e189`，该 worktree HEAD 为 `818e18990b8bf1aee4e493d238d1d0f912936652` 且 `git status --short` clean。`resources` 通过本地 git exclude 的 symlink 指向原资源目录，不改变源码。
 - 远程连接：当前通过 LAN `ubuntu@192.168.1.108` 可稳定执行 SSH 命令；Tailscale/WSL/SSH 异常只作为背景诊断，不再阻塞本次训练。
@@ -20,7 +20,7 @@
 - init checkpoint：`resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth`
 - 关键 CLI 配置：`model_type=tcnlstm`，`history_length=10`，`unroll_length=50`，`adaptive_history_context=true`，`adaptive_history_short_window=10`，`adaptive_history_mid_window=10`，`tcnlstm_side_history_selector_prior=null_short`，`tcnlstm_side_history_scale_init=0.005`，`history_context_mode=dmot_vbat`，`state_update_mode=residual_full_state`，只训练 `tcnlstm_side_history`，`batch_size=16`，`accumulate_grad_batches=32`，effective batch `512`，epochs `4`，`limit_train_batches=0.25`，`limit_val_batches=0.5`，`warmup_lr=1.5e-6`，`cosine_lr=4e-7`，early stopping patience `2`，`min_delta=2e-5`，WANDB disabled。首轮禁止 future context、`a/alpha` 和 true seq2seq。
 - smoke：`smoke_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 已通过；one-batch train/valid finite；`history_context_dim=5`；trainable names 仅 24 个 `model.tcnlstm_side_history_*`；valid gate stats：null `0.5252`、short `0.4118`、mid `0.0485`、full `0.0145`、`gate_saturation=0.0`、`reliability_mean=0.4976`、`reliability_std=0.0445`、`side_residual_norm=1.15e-06`。
-- 训练结果：训练 tmux 已退出，`train_summary.json` 已生成，`early_stopped=True`，`stopped_epoch=3`，`best_valid_loss=0.4615608752`，best checkpoint 为 `/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1/checkpoints/model-epoch=01-best_valid_loss=0.46.pth`。checkpoint 目录现有 `last_model.pth`、`model-epoch=00-best_valid_loss=0.46.pth`、`model-epoch=01-best_valid_loss=0.46.pth`、`model-epoch=02-best_valid_loss=0.46.pth`。训练日志无 OOM/NaN/Traceback；GPU watch tmux 仍在，可后续按用户决定清理。
+- 训练结果：训练 tmux 已退出，`train_summary.json` 已生成，`early_stopped=True`，`stopped_epoch=3`，`best_valid_loss=0.4615608752`，best checkpoint 为 `/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1/checkpoints/model-epoch=01-best_valid_loss=0.46.pth`。checkpoint 目录现有 `last_model.pth`、`model-epoch=00-best_valid_loss=0.46.pth`、`model-epoch=01-best_valid_loss=0.46.pth`、`model-epoch=02-best_valid_loss=0.46.pth`。训练日志无 OOM/NaN/Traceback；GPU watch tmux 仍在，当前按用户要求不清理。
 - 正式 validation：
   - e0：`valid_loss_epoch=0.4615604877`，`valid_q_loss_epoch=0.0412399694`，`valid_v_loss_epoch=0.1502761692`，`valid_omega_loss_epoch=0.2378911227`，`valid_state_mse_epoch=0.1953031570`
   - e1：`valid_loss_epoch=0.4615604281`，`valid_q_loss_epoch=0.0412399657`，`valid_v_loss_epoch=0.1502761543`，`valid_omega_loss_epoch=0.2378911227`，`valid_state_mse_epoch=0.1953031123`
@@ -28,8 +28,16 @@
 - selector / reliability（best epoch 观察值）：`null=0.5198`、`short=0.4173`、`mid=0.0482`、`full=0.0147`、`gate_saturation=0.0`、`reliability_mean=0.4969`、`reliability_std=0.0471`、`reliability_saturation=0.0`、`side_residual_norm=3.14e-05`。结论上未见 full gate 抢主导，side residual 保持很小。
 - Gate：TCNLSTM H10 attitude reference `best_valid_loss=0.4615005`、`valid_q=0.0412516`、`valid_v=0.1503205`、`valid_omega=0.2379201`。Green：e0 `<=0.46155`，或 e1 `<=0.46145` 且 q/omega/v 至少两个指标改善。Yellow：`0.46155 < e0 <=0.46220` 且 q/omega 没有同步明显变坏，最多观察 e1。Red：e0 `>0.46220`，或 q/omega/state_mse 同步明显变坏，停止不读 horizon/test。
 - 当前判断：`Yellow weak positive`。q/v/omega 都比 TCNLSTM H10 reference 略好，但整体 `valid_loss` 仍略差于 reference `0.4615005`，因此不触发 Green/freeze，也不触发 Red。
-- horizon/test：未读取，当前明确保持 `no`。
-- 下一步：等待用户 / GPT Pro 决策；不要自动启动新候选，不要自动读 horizon/test，不要恢复旧候选。
+- paired screening horizon/test（2026-05-16 22:04 CST）：
+  - 评估目标：A=`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth`；B=`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1/checkpoints/model-epoch=01-best_valid_loss=0.46.pth`。
+  - eval worktree：`/home/ubuntu/Developer/long-horizon-dynamics_run_818e189`，HEAD=`818e18990b8bf1aee4e493d238d1d0f912936652`，`git status --short` clean。
+  - 先搜索 reference 旧结果：存在 `horizon_summary.json`、`horizon_metrics.csv` 和 `logs/eval_lockaudit_20260511_tcnlstm_attitude_H10_e3_p1_b32.log`；该历史 audit 具备 `unroll_length=50`、h1/h10/h25/h50 和 `Average rollout loss=0.528880774974823`，但未记录 eval commit/code version，且 summary 不含 `MSE_x`、`MSE_1_to_F`、`actual_unroll_length/requested_eval_horizons/computed_eval_horizons/skipped_eval_horizons`，因此不是当前 MSE-schema / no-silent-skip guard 同协议结果。
+  - 同 commit reference 重跑：失败。使用 clean worktree `818e189` 的当前 `tcnlstm.py` 重跑 A 时，`model.load_state_dict()` 因大量新增 `model.decoder_state_residual_* / model.gru_context_* / model.long_delta_* / model.velocity_residual_* ...` key 缺失报错，说明老 reference checkpoint 与当前代码结构不兼容；因此本轮无法完成“同 commit、同协议”的成对 A/B screening。
+  - candidate screening：在 staging 路径 `/home/ubuntu/Developer/long-horizon-dynamics_run_818e189/eval_runs/paired_screening_20260516_tcnlstm_h10/candidate` 完成，关键配置为 `model_type=tcnlstm`、`dataset=neurobemfullstate`、`accelerator=cuda`、`wandb_mode=disabled`、`eval_batch_size=32`、`eval_horizons=1,10,25,50`、`unroll_length=50`。结果：`Average rollout loss=0.5289415717124939`；`MSE_1_to_F=0.2998902425296879`；h1 `E_q/E_v/E_omega=0.0014256537/0.0100071911/0.0537533365`；h10 `0.0174112123/0.0865228449/0.2137843424`；h25 `0.0445510701/0.1861040668/0.2681404888`；h50 `0.0907420093/0.3453549326/0.3335756141`；mean `0.0458699550/0.1857792090/0.2566082121`；`h50 MSE_x=0.5830667752`；`actual_unroll_length=50`；`requested_eval_horizons=[1,10,25,50]`；`computed_eval_horizons=[1,10,25,50]`；`skipped_eval_horizons=[]`。
+  - available evidence 对比：candidate 的 h1/h10/h25/h50 / mean `E_q/E_v/E_omega` 与 reference 旧 audit 几乎完全重合，`average rollout loss` 反而略高 `+6.08e-05`；但由于 reference 侧没有同 commit 的 `MSE_x/MSE_1_to_F`，本轮不能宣称“paired screening completed”。
+- horizon/test：已读取 candidate screening，但 reference 仅有历史 audit 可参考；当前不能写 locked audit 结论。
+- 当前结论：`validation-only weak positive; no confirmed horizon benefit`。已有证据不支持进入 H20 conservative。
+- 下一步：等待用户 / GPT Pro 决策；不要自动启动新候选，不要自动读新的 horizon/test，不要恢复旧候选。若接受当前证据，后续优先 `tcnlstm_actuator_only_ctx_H10` 或 `tcnlstm_geoactctx_film_gate`；若要求严格 paired same-commit screening，则需先解决 reference checkpoint compatibility 问题。
 - 禁止动作：不要恢复旧 GRUTCN rawtokgeo，不要启动 true seq2seq，不要先上 H20/H50；不要读取 horizon/test，除非用户或 GPT Pro 明确允许。
 
 ## 本轮代码/协议变更（2026-05-15 23:40 CST）

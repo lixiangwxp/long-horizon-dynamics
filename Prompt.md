@@ -17,9 +17,9 @@
 
 不要在这里记录密钥、token、私有登录信息。
 
-## 当前状态（2026-05-16 21:16 CST）
+## 当前状态（2026-05-16 22:04 CST）
 
-- 当前 active：none。当前阶段为 `post-run decision pending`，不自动启动新候选，不自动读取 horizon/test，不恢复旧候选。
+- 当前 active：none。当前阶段为 `post-run paired-screening decision pending`，不自动启动新候选，不自动读取新的 horizon/test，不恢复旧候选。
 - 最新完成实验：`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1`。目标是假设在不破坏 H10 attitude anchor 的前提下，用 SO(3) geometric history + past-only `dmot/vbat` actuator context 给 `v/omega` 带来稳定正信号。
 - 代码 / 实验 base：`main@818e18990b8bf1aee4e493d238d1d0f912936652`；远端正式训练在 clean worktree `/home/ubuntu/Developer/long-horizon-dynamics_run_818e189` 启动，`resources` 通过 symlink 复用原资源目录。init checkpoint：`/home/ubuntu/Developer/long-horizon-dynamics_run_818e189/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth`。
 - 关键 CLI 配置：`model_type=tcnlstm`，`history_length=10`，`unroll_length=50`，`adaptive_history_context=true`，`adaptive_history_short_window=10`，`adaptive_history_mid_window=10`，`tcnlstm_side_history_selector_prior=null_short`，`tcnlstm_side_history_scale_init=0.005`，`history_context_mode=dmot_vbat`，`state_update_mode=residual_full_state`，只训练 `tcnlstm_side_history`，batch `16`，accumulate `32`，effective batch `512`，epochs `4`，`limit_train_batches=0.25`，`limit_val_batches=0.5`，`warmup_lr=1.5e-6`，`cosine_lr=4e-7`，early stopping patience `2`，`min_delta=2e-5`。明确不使用 future context、`a/alpha`、true seq2seq。
@@ -31,8 +31,14 @@
   - best epoch（epoch 1）：与 e1 相同
 - best epoch 的 selector / reliability：`null=0.5198`、`short=0.4173`、`mid=0.0482`、`full=0.0147`、`gate_saturation=0.0`、`reliability_mean=0.4969`、`reliability_std=0.0471`、`reliability_saturation=0.0`、`side_residual_norm=3.14e-05`。说明 long-history side branch 没有 full dominate，也没有明显破坏 anchor。
 - 结论：`Yellow weak positive`。`q/v/omega` 都比 TCNLSTM H10 reference（`best_valid_loss=0.4615005`，`valid_q=0.0412516`，`valid_v=0.1503205`，`valid_omega=0.2379201`）略好，但整体 `valid_loss` 仍略差于 reference，未达到 Green/freeze，也未触发 Red。这个结果支持“SO(3) geometric history + past-only actuator context 有微弱稳定正信号，但增益还不足以转化成整体胜出”。
-- horizon/test：`no`，本轮明确未读取；是否读取由用户 / GPT Pro 后续明确决定。
-- 下一步：等待用户 / GPT Pro 决策，不自动开新候选；automation 应保持为 post-run decision pending，而不是 active monitor。
+- paired screening horizon/test（2026-05-16 22:04 CST）：
+  - 目标：比较 A=`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth` 与 B=`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1/checkpoints/model-epoch=01-best_valid_loss=0.46.pth`，协议要求 clean eval worktree `main@818e18990b8bf1aee4e493d238d1d0f912936652`、`eval_horizons=1,10,25,50`、`unroll_length=50`、no-silent-skip guard。
+  - reference 旧结果已存在：`horizon_summary.json`、`horizon_metrics.csv`、`logs/eval_lockaudit_20260511_tcnlstm_attitude_H10_e3_p1_b32.log`。它有 `unroll_length=50`、h1/h10/h25/h50 和 `Average rollout loss=0.528880774974823`，但未记录 eval commit/code version，且 summary 没有 `MSE_x`、`MSE_1_to_F`、`actual_unroll_length/requested_eval_horizons/computed_eval_horizons/skipped_eval_horizons`，因此不是当前 MSE-schema 同协议结果。
+  - 尝试在 clean worktree `818e189` 直接重跑 reference 失败：当前 `tcnlstm.py` 对 A 的 `state_dict` 报大量新增 key 缺失（`decoder_state_residual_*`、`gru_context_*`、`long_delta_*`、`velocity_residual_*` 等），说明老 reference checkpoint 与当前代码结构不兼容；因此本轮无法完成“同 commit、同协议”的严格 paired A/B screening。
+  - candidate screening 已完成：在 staging 路径 `/home/ubuntu/Developer/long-horizon-dynamics_run_818e189/eval_runs/paired_screening_20260516_tcnlstm_h10/candidate` 运行，关键 eval config 为 `model_type=tcnlstm`、`dataset=neurobemfullstate`、`accelerator=cuda`、`wandb_mode=disabled`、`eval_batch_size=32`、`eval_horizons=1,10,25,50`。结果：`Average rollout loss=0.5289415717124939`；`MSE_1_to_F=0.2998902425296879`；h1 `E_q/E_v/E_omega=0.0014256537/0.0100071911/0.0537533365`；h10 `0.0174112123/0.0865228449/0.2137843424`；h25 `0.0445510701/0.1861040668/0.2681404888`；h50 `0.0907420093/0.3453549326/0.3335756141`；mean `0.0458699550/0.1857792090/0.2566082121`；`h50 MSE_x=0.5830667752`；`actual_unroll_length=50`；`requested_eval_horizons=[1,10,25,50]`；`computed_eval_horizons=[1,10,25,50]`；`skipped_eval_horizons=[]`。
+  - 现有证据：candidate 的 h1/h10/h25/h50 / mean `E_q/E_v/E_omega` 与 reference 历史 audit 几乎完全重合，`average rollout loss` 还略高 `+6.08e-05`。因此虽然 validation 是 weak positive，但 horizon 侧没有可确认的聚合收益。
+- horizon/test：已读取 candidate screening；reference 仅有历史 audit 结果可参考，当前不能写成 locked audit 或严格 paired screening 完成。
+- 下一步：等待用户 / GPT Pro 决策，不自动开新候选。若接受当前证据，结论更接近 `validation-only weak positive; no horizon benefit`，不建议上 H20 conservative，后续优先 `tcnlstm_actuator_only_ctx_H10` 或 `tcnlstm_geoactctx_film_gate`；若坚持严格 paired same-commit screening，则需先解决 reference checkpoint compatibility。
 
 ### code snapshot - 2026-05-16 12:55 CST
 

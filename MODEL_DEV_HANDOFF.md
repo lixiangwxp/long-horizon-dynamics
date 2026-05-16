@@ -1,6 +1,6 @@
 # 模型开发详细交接
 
-最后更新：2026-05-16 21:16 CST。
+最后更新：2026-05-16 22:04 CST。
 
 本文件用途：给新的 Codex 聊天、子 agent 或人工接手者快速继承当前模型开发 sprint。它应该比 `Prompt.md` 更像“可执行交接说明”，但不保存逐分钟巡检流水。完整历史归档见：
 
@@ -15,9 +15,9 @@
 3. 只有新聊天、上下文压缩后状态不明、当前状态冲突或重大复盘时，才读 `Prompt.md` 和本文件全文。
 4. 同一窗口的 heartbeat 普通巡检不要反复整篇读取本文件，优先用 `rg`/`sed` 定向读取必要片段。
 
-## 当前接手状态（2026-05-16 21:16 CST）
+## 当前接手状态（2026-05-16 22:04 CST）
 
-- 当前 active：none。当前阶段为 `post-run decision pending`；不要自动启动新候选，不要自动读取 horizon/test，不要恢复旧候选。
+- 当前 active：none。当前阶段为 `post-run paired-screening decision pending`；不要自动启动新候选，不要自动读取新的 horizon/test，不要恢复旧候选。
 - review/base 版本：用户指定 GPT Pro review target 为 `main@818e18990b8bf1aee4e493d238d1d0f912936652`；文档里较早的 commit SHA 仅作历史记录，不要为了“记录最终 head SHA”反复 docs-only commit。
 - 本次正式训练代码：远端原 repo `/home/ubuntu/Developer/long-horizon-dynamics` 仍保留旧 dirty 现场；为避免破坏现场并保证 formal run 可追溯，已在远端创建 clean worktree `/home/ubuntu/Developer/long-horizon-dynamics_run_818e189`。该 worktree detached HEAD 为 `818e18990b8bf1aee4e493d238d1d0f912936652`，启动前 `git status --short` clean；`resources` 通过 symlink 指向原 repo resources，并用本地 git exclude 避免把 symlink 计入 dirty。
 - 远程连接：当前使用 LAN `ubuntu@192.168.1.108`；Tailscale/WSL/SSH 异常不再阻塞训练，但仍可作为背景诊断。
@@ -38,7 +38,16 @@
 - Gate：TCNLSTM H10 attitude reference `best_valid_loss=0.4615005`、`valid_q=0.0412516`、`valid_v=0.1503205`、`valid_omega=0.2379201`。Green：e0 `<=0.46155`，或 e1 `<=0.46145` 且 q/omega/v 至少两个指标改善。Yellow：`0.46155 < e0 <=0.46220` 且 q/omega 没有同步明显变坏，最多观察 e1。Red：e0 `>0.46220`，或 q/omega/state_mse 同步明显变坏，停止不读 horizon/test。
 - 当前判断：`Yellow weak positive`。q/v/omega 都比 TCNLSTM H10 reference 略好，但整体 `valid_loss` 仍略差于 reference `0.4615005`，因此不触发 Green/freeze，也不触发 Red。当前可表述为“SO(3) geometric history + past-only actuator context 给 v/omega 带来微弱但稳定正信号，同时没有明显破坏 q/anchor”，但还不够支持自动推进下一候选。
 - horizon/test：未读取，当前明确保持 `no`。
-- 当前 automation 目标：应为 post-run decision pending，只提醒状态冲突或用户/GPT Pro 新决策；不要再按 active-monitor 方式巡检训练，不自动读 horizon/test，不自动开新候选。
+- 当前 automation 目标：应为 post-run decision pending，只提醒状态冲突或用户/GPT Pro 新决策；不要再按 active-monitor 方式巡检训练，不自动读新的 horizon/test，不自动开新候选。
+- paired screening horizon/test（2026-05-16 22:04 CST）：
+  - 任务：对比 A=`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth` 与 B=`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1/checkpoints/model-epoch=01-best_valid_loss=0.46.pth`，仅做 paired screening，不做 locked final audit。
+  - eval worktree：`/home/ubuntu/Developer/long-horizon-dynamics_run_818e189`，HEAD=`818e18990b8bf1aee4e493d238d1d0f912936652`，`git status --short` clean。
+  - 先查 reference 旧结果：存在 `/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/horizon_summary.json`、`horizon_metrics.csv`、`logs/eval_lockaudit_20260511_tcnlstm_attitude_H10_e3_p1_b32.log`。该历史 audit 记录 `unroll_length=50`、h1/h10/h25/h50 和 `Average rollout loss=0.528880774974823`，但未记录 eval commit/code version，且 summary 不含 `MSE_x`、`MSE_1_to_F`、`actual_unroll_length/requested_eval_horizons/computed_eval_horizons/skipped_eval_horizons`，因此不是当前 MSE-schema/no-silent-skip guard 同协议结果。
+  - 为避免覆盖原实验目录，本轮在 clean worktree 下创建 staging eval 目录：`/home/ubuntu/Developer/long-horizon-dynamics_run_818e189/eval_runs/paired_screening_20260516_tcnlstm_h10/reference` 与 `.../candidate`，复制 `args.txt`、目标 checkpoint，并把 `train_summary.json.best_model_path` 改到 staging checkpoint。
+  - 同 commit reference 重跑失败：命令使用 `/home/ubuntu/miniconda3/envs/dynamics_learning/bin/python scripts/eval.py --model_type tcnlstm --dataset neurobemfullstate --accelerator cuda --wandb_mode disabled --eval_batch_size 32 --eval_horizons 1,10,25,50 --experiment_path <staging_ref>`。失败点在 `model.load_state_dict()`；当前 `tcnlstm.py` 相比 A 训练时代已新增大量参数，典型缺失 key 包括 `model.decoder_state_residual_*`、`model.gru_context_*`、`model.long_delta_*`、`model.velocity_residual_*` 等。结论：老 reference checkpoint 与 `818e189` 当前代码结构不兼容，本轮无法完成“同 commit、同协议”的严格 paired A/B screening。
+  - candidate screening 成功完成：staging path=`/home/ubuntu/Developer/long-horizon-dynamics_run_818e189/eval_runs/paired_screening_20260516_tcnlstm_h10/candidate`；source checkpoint=`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1/checkpoints/model-epoch=01-best_valid_loss=0.46.pth`；eval log=`/home/ubuntu/Developer/long-horizon-dynamics_run_818e189/logs/eval_pairscreen_tcnlstm_h10_candidate_20260516.log`。结果：`Average rollout loss=0.5289415717124939`；`MSE_1_to_F=0.2998902425296879`；h1 `E_q/E_v/E_omega=0.0014256537/0.0100071911/0.0537533365`；h10 `0.0174112123/0.0865228449/0.2137843424`；h25 `0.0445510701/0.1861040668/0.2681404888`；h50 `0.0907420093/0.3453549326/0.3335756141`；mean `0.0458699550/0.1857792090/0.2566082121`；`h50 MSE_x=0.5830667752`；`actual_unroll_length=50`；`requested_eval_horizons=[1,10,25,50]`；`computed_eval_horizons=[1,10,25,50]`；`skipped_eval_horizons=[]`。
+  - 可用比较证据：candidate 的 h1/h10/h25/h50 / mean `E_q/E_v/E_omega` 与 reference 历史 audit 几乎完全重合，`average rollout loss` 还略高 `+6.08e-05`；因此现有证据不支持“有 horizon 聚合收益”。但由于 reference 侧没有同 commit 的 `MSE_x/MSE_1_to_F`，不能把本轮写成严格 paired screening completed。
+  - 当前最合理结论：`validation-only weak positive; no confirmed horizon benefit`。不建议上 H20 conservative。若接受当前证据，下一步优先 `tcnlstm_actuator_only_ctx_H10` 或 `tcnlstm_geoactctx_film_gate`；若要求严格 paired same-commit screening，需先决定是否为 reference checkpoint 提供 compatibility loader / old-code eval 路径。
 - 后续分支：等待用户 / GPT Pro 决策。只有在明确允许后，才进入 H20 conservative、FiLM/gate、actuator-only `dmot/vbat` context 或更后面的 true seq2seq fallback。
 
 ## 最新代码/协议变更（2026-05-15 23:40 CST）
