@@ -17,14 +17,22 @@
 
 不要在这里记录密钥、token、私有登录信息。
 
-## 当前状态（2026-05-16 12:42 CST）
+## 当前状态（2026-05-16 21:16 CST）
 
-- 当前无已确认 active training/evaluation。远程 `desktop-0r0t1bo-1 / 100.106.154.6` 在 `tailscale status` 中显示 active，但本机 Codex 对 `gpu4060`/`gpu4060-ts` SSH 与 `tailscale ping 100.106.154.6` 均 timeout。局域网 `192.168.1.108` 可 ping，22 端口返回 Ubuntu OpenSSH banner，公钥认证可通过，但远端 session 创建/命令执行阶段超时；单独执行 `hostname`/`pwd`/`whoami` 也会挂住。按远程 WSL/sshd/session 创建异常处理，不判定实验失败；已启动网络/SSH 诊断 subagent，主线暂时等待远程 shell 恢复。
-- `modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_from_attitude_e3_p1`（`scale_init=0.01`）已在 e0 validation 前按新 Pro 建议停止并替换，原因是 additive side residual 首轮建议用 `0.003/0.005`，`0.01` 留给 FiLM/gate；该候选未读 horizon/test，artifacts 保留。
-- `smoke_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 已启动，命令日志显示 one-batch train/valid finite，但远程在读取 `train_summary.json` 前不可达；下一轮先确认 summary/CSV gate stats 后再启动正式训练。
-- 下一步正式候选：`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1`。配置：TCNLSTM H10，`unroll_length=50`，只训 `tcnlstm_side_history`，`selector_prior=null_short`，`tcnlstm_side_history_scale_init=0.005`，`warmup_lr=1.5e-6`、`cosine_lr=4e-7`，batch `16`、accumulate `32`、epochs `4`，`limit_train_batches=0.25`、`limit_val_batches=0.5`，past-only `dmot/vbat` context，不用 future context，不用 `a/alpha`。
-- 当前路线按 2026-05-16 用户/Pro 建议：TCNLSTM anchor-first，不急着 seq2seq。H10 有正信号才上 H20 conservative；H10 v/omega 有信号但 q/state_mse 被破坏则改 FiLM/gate；H10 无 v/omega 信号且 q/omega 同步变坏则转 actuator-only context；true seq2seq `Delta v[1:F]/Delta omega[1:F]` 只作最后 fallback。
-- Gate：TCNLSTM H10 attitude reference `best_valid_loss=0.4615005`、`valid_q=0.0412516`、`valid_v=0.1503205`、`valid_omega=0.2379201`。Green：e0 `<=0.46155`，或 e1 `<=0.46145` 且 q/omega/v 至少两个指标改善；Yellow：`0.46155 < e0 <=0.46220` 且 q/omega 没有同步明显变坏，最多观察 e1；Red：e0 `>0.46220`，或 q/omega/state_mse 同步明显变坏，停止不读 horizon/test。必须记录 `side_residual_norm`、gate mean、null gate ratio、是否作用到 q residual、是否只影响 v/omega gate。
+- 当前 active：none。当前阶段为 `post-run decision pending`，不自动启动新候选，不自动读取 horizon/test，不恢复旧候选。
+- 最新完成实验：`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1`。目标是假设在不破坏 H10 attitude anchor 的前提下，用 SO(3) geometric history + past-only `dmot/vbat` actuator context 给 `v/omega` 带来稳定正信号。
+- 代码 / 实验 base：`main@818e18990b8bf1aee4e493d238d1d0f912936652`；远端正式训练在 clean worktree `/home/ubuntu/Developer/long-horizon-dynamics_run_818e189` 启动，`resources` 通过 symlink 复用原资源目录。init checkpoint：`/home/ubuntu/Developer/long-horizon-dynamics_run_818e189/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth`。
+- 关键 CLI 配置：`model_type=tcnlstm`，`history_length=10`，`unroll_length=50`，`adaptive_history_context=true`，`adaptive_history_short_window=10`，`adaptive_history_mid_window=10`，`tcnlstm_side_history_selector_prior=null_short`，`tcnlstm_side_history_scale_init=0.005`，`history_context_mode=dmot_vbat`，`state_update_mode=residual_full_state`，只训练 `tcnlstm_side_history`，batch `16`，accumulate `32`，effective batch `512`，epochs `4`，`limit_train_batches=0.25`，`limit_val_batches=0.5`，`warmup_lr=1.5e-6`，`cosine_lr=4e-7`，early stopping patience `2`，`min_delta=2e-5`。明确不使用 future context、`a/alpha`、true seq2seq。
+- smoke 已通过：`smoke_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` one-batch train/valid finite；`history_context_dim=5`；trainable names 仅 24 个 `model.tcnlstm_side_history_*`；`null/short/mid/full=0.5252/0.4118/0.0485/0.0145`，`gate_saturation=0.0`，`reliability_mean/std=0.4976/0.0445`，`side_residual_norm=1.15e-06`。
+- 正式训练已结束：训练 tmux 已退出，`train_summary.json` 已生成，`early_stopped=True`，`stopped_epoch=3`，`best_valid_loss=0.4615608752`，best checkpoint 为 `/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1/checkpoints/model-epoch=01-best_valid_loss=0.46.pth`。checkpoint 目录保留 `last_model.pth`、`model-epoch=00-best_valid_loss=0.46.pth`、`model-epoch=01-best_valid_loss=0.46.pth`、`model-epoch=02-best_valid_loss=0.46.pth`。日志无 OOM/NaN/Traceback；GPU watch tmux 仍在，但本轮按 docs-only 不清理。
+- validation 关键结果：
+  - e0：`valid_loss_epoch=0.4615604877`，`valid_q_loss_epoch=0.0412399694`，`valid_v_loss_epoch=0.1502761692`，`valid_omega_loss_epoch=0.2378911227`，`valid_state_mse_epoch=0.1953031570`
+  - e1：`valid_loss_epoch=0.4615604281`，`valid_q_loss_epoch=0.0412399657`，`valid_v_loss_epoch=0.1502761543`，`valid_omega_loss_epoch=0.2378911227`，`valid_state_mse_epoch=0.1953031123`
+  - best epoch（epoch 1）：与 e1 相同
+- best epoch 的 selector / reliability：`null=0.5198`、`short=0.4173`、`mid=0.0482`、`full=0.0147`、`gate_saturation=0.0`、`reliability_mean=0.4969`、`reliability_std=0.0471`、`reliability_saturation=0.0`、`side_residual_norm=3.14e-05`。说明 long-history side branch 没有 full dominate，也没有明显破坏 anchor。
+- 结论：`Yellow weak positive`。`q/v/omega` 都比 TCNLSTM H10 reference（`best_valid_loss=0.4615005`，`valid_q=0.0412516`，`valid_v=0.1503205`，`valid_omega=0.2379201`）略好，但整体 `valid_loss` 仍略差于 reference，未达到 Green/freeze，也未触发 Red。这个结果支持“SO(3) geometric history + past-only actuator context 有微弱稳定正信号，但增益还不足以转化成整体胜出”。
+- horizon/test：`no`，本轮明确未读取；是否读取由用户 / GPT Pro 后续明确决定。
+- 下一步：等待用户 / GPT Pro 决策，不自动开新候选；automation 应保持为 post-run decision pending，而不是 active monitor。
 
 ### code snapshot - 2026-05-16 12:55 CST
 
