@@ -26,6 +26,7 @@
 26.当前实验优先级：先完成 active `raw_token_geometric_delta`；若有接近正信号，最多做一次 conservative scope 或短 continuation；之后进入 history-only `dmot/vbat` context branch；再进入 adaptive history selector；再把成熟 trick 迁移到 `tcnlstm.py`；只有这些方向都没有 horizon/test 聚合收益时，才启动完整 true seq2seq `Delta v[1:F] / Delta omega[1:F]` predictor。
 27.Gate 更新：`raw_token_geometric_delta` 属于 representation fix，除非 e0/e1 灾难性恶化，否则至少观察 e1 或 natural finish；`dmot/vbat` context branch 重点看 `valid_v/valid_omega`、h50 `E_v/E_omega` 和 `MSE_1_to_F`，若没有正信号先检查字段进入 forward、归一化和 leakage；adaptive history selector 除 loss 外必须记录 gate mean/std/saturation，gate 学会关闭长历史且指标不坏也可作为有效诊断；true seq2seq 候选不能用 e0 直接杀死，至少给 1-2 个完整 validation 周期、独立 LR/warmup 和结构匹配 trainable scope。
 28.禁止连续小修规则：若连续 1-2 个同类 tiny adapter / scale / LR continuation 没有带来 `MSE_1_to_F` 或 h50 `E_v/E_omega/E_q` 聚合收益，不得继续开相似候选；必须转向下一层结构假设。
+29.在 snapshot/review 等待态下，Codex 只能做 read-only 巡检和网络/SSH 诊断；不得启动训练、eval、horizon 或 locked audit，除非用户明确恢复实验推进。网络/SSH 诊断只能做低风险只读检查；除非发现会改变 active 状态的事实，否则不要写项目文档。
 
 ## Git / Commit / Experiment Version Rules
 

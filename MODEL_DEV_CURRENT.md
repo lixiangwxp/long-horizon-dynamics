@@ -1,16 +1,22 @@
 # 当前模型冲刺短状态
 
-最后更新：2026-05-16 12:55 CST。
+最后更新：2026-05-16 13:05 CST。
 
 用途：同一聊天窗口和 heartbeat 自动化优先读取本文件，避免反复完整读取 `Prompt.md` / `MODEL_DEV_HANDOFF.md` 造成上下文膨胀。只有新聊天、上下文压缩后状态不明、当前状态冲突、或需要历史复盘时，才读取完整交接文档。
 
 ## 当前 Active
 
 - 状态：当前无 active training/evaluation。
-- 最近代码状态：coherent architecture/protocol snapshot 已提交。base SHA：`27be3448d7bbf3bda7f48522fa03c747477f8d1b`；snapshot commit：`4f7309615dfe64ec59f2aa30ede17545202a3749` (`arch: snapshot model sprint workflow and protocol changes`)。
+- 当前阶段：snapshot/review 等待态。
+- base SHA：`27be3448d7bbf3bda7f48522fa03c747477f8d1b`
+- snapshot commit：`4f7309615dfe64ec59f2aa30ede17545202a3749`
+- review head SHA：`ccad4d9314df216800bab85ef7e9d87f05b4e320`
+- 当前代码状态：architecture/protocol snapshot 已 commit 并 push 到 `main`；`py_compile` 和 `git diff --check` 已通过；push 后 `git status` clean。
+- 当前 active：none。
 - 本次 snapshot 文件：`AGENTS.md`、`MODEL_DEV_CURRENT.md`、`MODEL_DEV_HANDOFF.md`、`Prompt.md`、`scripts/config.py`、`scripts/eval.py`、`scripts/train.py`、`scripts/dynamics_learning/data.py`、`scripts/dynamics_learning/lighting.py`、`scripts/dynamics_learning/registry.py`、`scripts/dynamics_learning/models/grutcn.py`、`scripts/dynamics_learning/models/tcnlstm.py`。
-- 当前远程状态：无确认 active；Tailscale/WSL/SSH 曾出现 session 创建超时，网络诊断 subagent 已介入。snapshot 完成前不要启动训练、eval、horizon 或 locked audit。
-- 下一步：push 当前 snapshot 后，给 GPT Pro review；review 后再决定是否恢复并启动 `modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 或其他候选。
+- 当前远程状态：无确认 active；Tailscale/WSL/SSH 曾出现 session 创建超时，网络诊断 subagent 已介入。
+- 禁止动作：GPT Pro review 完成前，不要启动训练、eval、horizon 或 locked audit。
+- 下一步：等待 GPT Pro review；用户明确恢复实验推进后，再按 review 结论启动下一轮候选。
 
 ## 本轮代码/协议变更（2026-05-15 23:40 CST）
 

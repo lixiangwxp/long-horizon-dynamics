@@ -53,6 +53,12 @@
   - git diff --check: passed
 - commit:
   - `4f7309615dfe64ec59f2aa30ede17545202a3749` `arch: snapshot model sprint workflow and protocol changes`
+- final review head SHA：
+  - `ccad4d9314df216800bab85ef7e9d87f05b4e320`
+- push：
+  - 已 push 到 `main`
+- review state：
+  - 当前等待 GPT Pro review；无 active training/evaluation；review 前不要启动新实验、eval、horizon 或 locked audit。
 - 当前 active:
   - none
 - 下一步：

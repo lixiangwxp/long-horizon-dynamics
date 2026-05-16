@@ -1,6 +1,6 @@
 # 模型开发详细交接
 
-最后更新：2026-05-16 12:55 CST。
+最后更新：2026-05-16 13:05 CST。
 
 本文件用途：给新的 Codex 聊天、子 agent 或人工接手者快速继承当前模型开发 sprint。它应该比 `Prompt.md` 更像“可执行交接说明”，但不保存逐分钟巡检流水。完整历史归档见：
 
@@ -15,15 +15,18 @@
 3. 只有新聊天、上下文压缩后状态不明、当前状态冲突或重大复盘时，才读 `Prompt.md` 和本文件全文。
 4. 同一窗口的 heartbeat 普通巡检不要反复整篇读取本文件，优先用 `rg`/`sed` 定向读取必要片段。
 
-## 当前接手状态（2026-05-16 12:55 CST）
+## 当前接手状态（2026-05-16 13:05 CST）
 
-- 当前 active：none。不要启动训练、eval、horizon 或 locked audit；本轮目标是整理当前 dirty main，形成可追溯 architecture/protocol snapshot 并 push，供 GPT Pro review。
+- 当前 active：none。当前状态为 snapshot/review 等待态；review 完成前不要启动训练、eval、horizon 或 locked audit。
 - base SHA：`27be3448d7bbf3bda7f48522fa03c747477f8d1b`。当前 dirty files 属于同一个 coherent snapshot：文档工作流规则 + 已实现的模型/训练/eval/data 协议改动。
+- review head SHA：`ccad4d9314df216800bab85ef7e9d87f05b4e320`
+- snapshot commit：`4f7309615dfe64ec59f2aa30ede17545202a3749`
+- 当前状态：snapshot 已 push 到 `main`，等待 GPT Pro review。
 - 本次 snapshot 文件：`AGENTS.md`、`MODEL_DEV_CURRENT.md`、`MODEL_DEV_HANDOFF.md`、`Prompt.md`、`scripts/config.py`、`scripts/eval.py`、`scripts/train.py`、`scripts/dynamics_learning/data.py`、`scripts/dynamics_learning/lighting.py`、`scripts/dynamics_learning/registry.py`、`scripts/dynamics_learning/models/grutcn.py`、`scripts/dynamics_learning/models/tcnlstm.py`。
 - 当前代码/协议摘要：包含 eval no-silent-skip guard、`state_update_mode` wiring、history-only `dmot/vbat` context、adaptive history stats、GRUTCN adaptive history side branch、TCNLSTM side-history/null-trust switches，以及训练/eval summary 字段扩展。
 - 最近实验状态：无 active。`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_from_attitude_e3_p1` 已在 e0 前替换；`smoke_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 启动日志显示 one-batch finite，但远程 shell 不稳定，summary 未确认；不写正式结论。
 - 远程状态：Tailscale/WSL/SSH 曾出现 session 创建超时，网络/SSH 诊断 subagent 已介入；snapshot 完成前不要依赖远程启动训练。
-- 本次 snapshot commit：`4f7309615dfe64ec59f2aa30ede17545202a3749` `arch: snapshot model sprint workflow and protocol changes`。push 后交给 GPT Pro review。
+- 本次 snapshot commit：`4f7309615dfe64ec59f2aa30ede17545202a3749` `arch: snapshot model sprint workflow and protocol changes`，review head 为 `ccad4d9314df216800bab85ef7e9d87f05b4e320`。已 push 到 `main`，等待 GPT Pro review。
 - 下一步路线：等待 GPT Pro review 当前 snapshot 后，再决定是否恢复并启动 `modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1`，或按 TCNLSTM anchor-first / actuator context / FiLM-gate / H20 conservative 决策树调整。
 
 ## 最新代码/协议变更（2026-05-15 23:40 CST）
