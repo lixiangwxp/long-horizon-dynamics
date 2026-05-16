@@ -64,6 +64,12 @@ def get_model(args, input_size, output_size):
             tcnlstm_side_history_selector_prior=getattr(
                 args, "tcnlstm_side_history_selector_prior", "uniform"
             ),
+            tcnlstm_actuator_context=getattr(
+                args, "tcnlstm_actuator_context", False
+            ),
+            tcnlstm_actuator_context_scale_init=getattr(
+                args, "tcnlstm_actuator_context_scale_init", 0.003
+            ),
             history_context_dim=getattr(args, "history_context_dim", 0),
         ),
         "grutcn": GRUTCN(

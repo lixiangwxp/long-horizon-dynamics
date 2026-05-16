@@ -286,8 +286,18 @@ def main(args, resources_path, data_path, experiment_path):
             "tcnlstm_side_history_selector_prior": (
                 args.tcnlstm_side_history_selector_prior
             ),
+            "tcnlstm_actuator_context": args.tcnlstm_actuator_context,
+            "tcnlstm_actuator_context_scale_init": (
+                args.tcnlstm_actuator_context_scale_init
+            ),
             "history_context_mode": args.history_context_mode,
             "history_context_dim": args.history_context_dim,
+            "history_context_fields": (
+                ["dmot", "vbat"] if args.history_context_mode == "dmot_vbat" else []
+            ),
+            "uses_future_context": False,
+            "uses_a_alpha": False,
+            "actuator_context_affects_q_residual": False,
             "best_model_path": checkpoint_callback.best_model_path,
             "best_model_score": (
                 float(checkpoint_callback.best_model_score.cpu())

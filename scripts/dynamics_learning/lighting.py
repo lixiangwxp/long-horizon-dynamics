@@ -73,11 +73,18 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
 
     def log_adaptive_history_stats(self, prefix):
         stats = getattr(self.model, "adaptive_history_stats", {})
-        if not stats:
-            return
         for key, value in stats.items():
             self.log(
                 f"{prefix}_adaptive_history_{key}",
+                value.to(self.device),
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+            )
+        actuator_stats = getattr(self.model, "actuator_context_stats", {})
+        for key, value in actuator_stats.items():
+            self.log(
+                f"{prefix}_actuator_{key}",
                 value.to(self.device),
                 on_step=True,
                 on_epoch=True,

@@ -102,6 +102,10 @@ def parse_args():
         default="uniform",
         choices=["uniform", "null_short"],
     )
+    parser.add_argument("--tcnlstm_actuator_context", type=str_to_bool, default=False)
+    parser.add_argument(
+        "--tcnlstm_actuator_context_scale_init", type=float, default=0.003
+    )
     parser.add_argument(
         "--history_context_mode",
         type=str,

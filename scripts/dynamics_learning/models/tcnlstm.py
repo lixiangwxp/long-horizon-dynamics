@@ -65,7 +65,14 @@ class TCNLSTM(nn.Module):
             "tcnlstm_side_history_selector_prior", "uniform"
         )
         self.history_context_dim = int(kwargs.get("history_context_dim", 0) or 0)
+        self.tcnlstm_actuator_context = bool(
+            kwargs.get("tcnlstm_actuator_context", False)
+        )
+        self.actuator_context_scale_init = float(
+            kwargs.get("tcnlstm_actuator_context_scale_init", 0.003)
+        )
         self.adaptive_history_stats = {}
+        self.actuator_context_stats = {}
 
         # TCN 期望输入布局为 [B, F, H]，forward 中会从 [B, H, F] permute 过去。
         self.encoder = TemporalConvNet(
@@ -403,6 +410,39 @@ class TCNLSTM(nn.Module):
                 torch.tensor(self.side_history_scale_init)
             )
 
+        if self.tcnlstm_actuator_context:
+            if self.history_context_dim <= 0:
+                raise ValueError(
+                    "tcnlstm_actuator_context requires history_context_dim > 0."
+                )
+            self.tcnlstm_actuator_context_norm = nn.LayerNorm(
+                self.history_context_dim
+            )
+            self.tcnlstm_actuator_context_encoder = nn.GRU(
+                input_size=self.history_context_dim,
+                hidden_size=self.decoder_hidden_size,
+                num_layers=1,
+                batch_first=True,
+            )
+            actuator_feature_size = (
+                3 * self.decoder_hidden_size + self.tcn_channels
+            )
+            self.tcnlstm_actuator_context_feature_norm = nn.LayerNorm(
+                actuator_feature_size
+            )
+            self.tcnlstm_actuator_context_gate_delta = nn.Sequential(
+                nn.Linear(actuator_feature_size, self.decoder_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(self.decoder_hidden_size, 6),
+                nn.Tanh(),
+            )
+            nn.init.zeros_(self.tcnlstm_actuator_context_gate_delta[-2].weight)
+            nn.init.zeros_(self.tcnlstm_actuator_context_gate_delta[-2].bias)
+            self.tcnlstm_actuator_context_scale = nn.Parameter(
+                torch.tensor(self.actuator_context_scale_init)
+            )
+
         # 把最后一帧原始输入投影到 decoder hidden 维度，再和 attention context 拼接。
         self.input_proj = nn.Sequential(
             nn.Linear(input_size, self.decoder_hidden_size),
@@ -593,6 +633,38 @@ class TCNLSTM(nn.Module):
         }
         return side_delta
 
+    def _actuator_gate_delta(
+        self, context_hist, history_context, context, decoder_feature
+    ):
+        if not self.tcnlstm_actuator_context:
+            return None
+
+        if context_hist is None:
+            context_hist = history_context.new_zeros(
+                history_context.shape[0], self.history_len, self.history_context_dim
+            )
+        context_hist = self.tcnlstm_actuator_context_norm(context_hist)
+        _, actuator_hidden = self.tcnlstm_actuator_context_encoder(context_hist)
+        actuator_context = actuator_hidden[-1]
+        actuator_feature = self.tcnlstm_actuator_context_feature_norm(
+            torch.cat([actuator_context, history_context, context, decoder_feature], dim=-1)
+        )
+        raw_gate_delta = self.tcnlstm_actuator_context_gate_delta(actuator_feature)
+        gate_delta = self.tcnlstm_actuator_context_scale * raw_gate_delta
+
+        detached_delta = gate_delta.detach()
+        self.actuator_context_stats = {
+            "context_norm": actuator_context.detach().norm(dim=-1).mean(),
+            "gate_mean": detached_delta.abs().mean(),
+            "gate_max": detached_delta.abs().amax(),
+            "context_delta_scale": self.context_delta_scale.detach().abs(),
+            "vomega_gate_delta_norm": detached_delta.norm(dim=-1).mean(),
+            "affects_q_residual": detached_delta.new_tensor(0.0),
+            "future_context": detached_delta.new_tensor(0.0),
+            "uses_a_alpha": detached_delta.new_tensor(0.0),
+        }
+        return gate_delta
+
     def forward(self, x, init_memory=True, return_attention=False, context_hist=None):
         if x.ndim != 3:
             raise ValueError(
@@ -664,6 +736,17 @@ class TCNLSTM(nn.Module):
         correction_gate = self.correction_gate(
             torch.cat([base_feature, context, history_context, decoder_feature], dim=-1)
         )
+        actuator_gate_delta = self._actuator_gate_delta(
+            context_hist, history_context, context, decoder_feature
+        )
+        if actuator_gate_delta is not None:
+            correction_gate = correction_gate.clone()
+            correction_gate[:, 3:6] = (
+                correction_gate[:, 3:6] + actuator_gate_delta[:, 0:3]
+            ).clamp(0.0, 1.0)
+            correction_gate[:, 9:12] = (
+                correction_gate[:, 9:12] + actuator_gate_delta[:, 3:6]
+            ).clamp(0.0, 1.0)
         attitude_context = self._attend_attitude(enc_seq, decoder_feature, x_last)
         attitude_input = self.attitude_input_norm(
             torch.cat(
