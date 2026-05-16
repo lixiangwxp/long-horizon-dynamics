@@ -17,7 +17,18 @@
 
 不要在这里记录密钥、token、私有登录信息。
 
-## 当前状态（2026-05-16 22:04 CST）
+## 当前状态（2026-05-16 22:42 CST）
+
+- 当前 active：`modeldev_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1` 正式训练中。当前策略为 TCNLSTM anchor-first 的 actuator-only hidden context；不要启动 H20/H50、true seq2seq、旧 GRUTCN rawtokgeo，也不要读 horizon/test，除非用户或 GPT Pro 明确允许。
+- 代码版本：本地 `main@b9ae5d1b339e9e748af8690f73575e6de50b0c6b`，local clean；远程正式训练使用 clean worktree `/home/ubuntu/Developer/long-horizon-dynamics_run_b9ae5d`，HEAD=`b9ae5d1b339e9e748af8690f73575e6de50b0c6b`，`git status --short` clean。远端原 repo 仍保留旧 dirty 现场，不作为正式训练代码目录。
+- 远程路径：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1`；train tmux=`modeldev_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1`；GPU watch tmux=`modeldev_gpu_watch_tcnlstm_actuator_only_ctx_H10`；log=`logs/train_phase1.log`；GPU watch log=`logs/gpu_watch.log`。
+- 假设：上一轮 `geoactctx H10 nulltrust additive/side-history` 只有 validation-only weak positive 且无确认 horizon benefit，因此停止该分支，改为只用 past-only `dmot,vbat` 估计 hidden actuator context，并通过小尺度 gate delta 只调制 `v/omega` correction gate；不使用 future context，不使用 `a/alpha`，不碰 q residual，不改 `delta_p/dtheta`。
+- 配置：`model_type=tcnlstm`，`history_length=10`，`unroll_length=50`，`history_context_mode=dmot_vbat`，`tcnlstm_actuator_context=true`，`tcnlstm_actuator_context_scale_init=0.003`，只训练 `tcnlstm_actuator_context`，batch `16`，accumulate `32`，effective batch `512`，epochs `4`，`limit_train_batches=0.25`，`limit_val_batches=0.5`，`warmup_lr=1.5e-6`，`cosine_lr=4e-7`，early stopping patience `2`，`min_delta=2e-5`，WANDB disabled。init checkpoint：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth`。
+- smoke：`smoke_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1` 通过；checkpoint load 无旧 shape mismatch；one-batch train/valid finite，`best_valid_loss=0.1240352765`（smoke scale）；`history_context_dim=5`，context fields 仅 `dmot,vbat`；summary 记录 `uses_future_context=false`、`uses_a_alpha=false`、`actuator_context_affects_q_residual=false`；trainable names 仅 13 个 `model.tcnlstm_actuator_context_*`。
+- 启动检查：2026-05-16 22:41 CST 训练/watch tmux alive，日志确认 checkpoint load 与 trainable patterns 正确并进入 epoch 0，GPU 约 `1034/8188 MiB`、util `41%`，无 OOM/NaN/Traceback，尚无正式 validation row。
+- Gate：TCNLSTM H10 attitude reference 为 `best_valid_loss=0.4615005`、`valid_q=0.0412516`、`valid_v=0.1503205`、`valid_omega=0.2379201`。Green：`valid_v` 或 `valid_omega` 明显低于 reference，`valid_q` 不明显恶化，且 `best_valid_loss` 接近或优于 reference；或 e1 `best_valid_loss <=0.46145` 且 q/v/omega 至少两个改善。Yellow：`0.46150 < best_valid_loss <=0.46220` 且 v/omega 至少一个改善、q 不明显恶化。Red：e0 `>0.46220`，或 q/omega/state_mse 同步明显变坏，或 actuator gate/norm 膨胀；停止，不读 horizon/test。
+
+## 上一轮 geoactctx 归档（2026-05-16 22:04 CST）
 
 - 当前 active：none。当前阶段为 `post-run paired-screening decision pending`，不自动启动新候选，不自动读取新的 horizon/test，不恢复旧候选。
 - 最新完成实验：`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1`。目标是假设在不破坏 H10 attitude anchor 的前提下，用 SO(3) geometric history + past-only `dmot/vbat` actuator context 给 `v/omega` 带来稳定正信号。

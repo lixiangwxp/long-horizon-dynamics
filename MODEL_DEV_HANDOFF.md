@@ -1,6 +1,6 @@
 # 模型开发详细交接
 
-最后更新：2026-05-16 22:04 CST。
+最后更新：2026-05-16 22:42 CST。
 
 本文件用途：给新的 Codex 聊天、子 agent 或人工接手者快速继承当前模型开发 sprint。它应该比 `Prompt.md` 更像“可执行交接说明”，但不保存逐分钟巡检流水。完整历史归档见：
 
@@ -15,7 +15,25 @@
 3. 只有新聊天、上下文压缩后状态不明、当前状态冲突或重大复盘时，才读 `Prompt.md` 和本文件全文。
 4. 同一窗口的 heartbeat 普通巡检不要反复整篇读取本文件，优先用 `rg`/`sed` 定向读取必要片段。
 
-## 当前接手状态（2026-05-16 22:04 CST）
+## 当前接手状态（2026-05-16 22:42 CST）
+
+- 当前 active：`modeldev_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1` 正式训练中。当前阶段为 active training monitoring；不要自动启动 H20/H50、true seq2seq、旧 GRUTCN rawtokgeo，也不要读取 horizon/test，除非用户或 GPT Pro 明确允许。
+- 代码版本：本地 `main@b9ae5d1b339e9e748af8690f73575e6de50b0c6b`，local clean；远端原 repo `/home/ubuntu/Developer/long-horizon-dynamics` 仍保留旧 dirty 现场，因此正式训练使用 clean worktree `/home/ubuntu/Developer/long-horizon-dynamics_run_b9ae5d`，HEAD=`b9ae5d1b339e9e748af8690f73575e6de50b0c6b`，`git status --short` clean。`resources` 为 git-ignored symlink，指向原 repo resources。
+- 远程连接：当前使用 LAN `ubuntu@192.168.1.108`。
+- 实验路径：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1`。
+- train tmux：`modeldev_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1`。
+- GPU watch tmux：`modeldev_gpu_watch_tcnlstm_actuator_only_ctx_H10`。
+- train log：`logs/train_phase1.log`；GPU watch log：`logs/gpu_watch.log`。
+- init checkpoint：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth`。
+- 结构/协议：TCNLSTM H10 actuator-only hidden context 候选。保留 H10 attitude anchor 主路径；只从 `context_hist` 读取 past-only `dmot,vbat`，用 `tcnlstm_actuator_context_*` 编码 hidden actuator context，再以小尺度 gate delta 调制 `v/omega` correction gate。禁止 future context、`a/alpha`、q residual、`delta_p/dtheta` 改动、H20/H50 与 true seq2seq。
+- 正式训练配置：`history_length=10`，`unroll_length=50`，`history_context_mode=dmot_vbat`，`tcnlstm_actuator_context=true`，`tcnlstm_actuator_context_scale_init=0.003`，只训练 `tcnlstm_actuator_context`，batch `16`，accumulate `32`，effective batch `512`，epochs `4`，`limit_train_batches=0.25`，`limit_val_batches=0.5`，`warmup_lr=1.5e-6`，`cosine_lr=4e-7`，`warmup_steps=50`，`cosine_steps=1500`，early stopping patience `2`，`min_delta=2e-5`，WANDB disabled。
+- smoke：`smoke_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1` 已通过；checkpoint load 仅缺当前代码新增/未启用参数及 `model.tcnlstm_actuator_context_*`，无旧 shape mismatch；one-batch train/valid finite，`best_valid_loss=0.1240352765`（smoke scale）；`history_context_dim=5`，context fields 仅 `dmot,vbat`；`uses_future_context=false`，`uses_a_alpha=false`，`actuator_context_affects_q_residual=false`；trainable names 仅 13 个 `model.tcnlstm_actuator_context_*`。
+- 启动检查：2026-05-16 22:41 CST 训练 tmux 和 GPU watch tmux alive；日志确认 checkpoint load、trainable patterns 正确，训练已进入 epoch 0；GPU 约 `1034/8188 MiB`、util `41%`，有 `/python3.10` compute 进程；无 OOM/NaN/Traceback；尚无正式 validation row、checkpoint 或 `train_summary.json`。
+- 需要监控的 actuator diagnostics：`actuator_context_norm`、`actuator_gate_mean`、`actuator_gate_max`、`context_delta_scale`、`vomega_gate_delta_norm`、`affects_q_residual`、`future_context`、`uses_a_alpha`。后三项必须保持 `0/no`。
+- Gate：TCNLSTM H10 attitude reference `best_valid_loss=0.4615005`、`valid_q=0.0412516`、`valid_v=0.1503205`、`valid_omega=0.2379201`。Green：`valid_v` 或 `valid_omega` 明显低于 reference，`valid_q` 不明显恶化，且 `best_valid_loss` 接近或优于 reference；或 e1 `best_valid_loss <=0.46145` 且 q/v/omega 至少两个改善。Yellow：`0.46150 < best_valid_loss <=0.46220` 且 v/omega 至少一个改善、q 不明显恶化，可观察 e1/e2，但不要自动读 horizon/test。Red：e0 `>0.46220`，或 q/omega/state_mse 同步明显变坏，或 context gate full dominate / norm 膨胀；停止，不读 horizon/test。
+- 上一轮决策：`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 为 `validation-only weak positive; no confirmed horizon benefit`，已停止推进 additive/side-history branch；不做 continuation，不上 H20，不修旧 reference compatibility。
+
+## 上一轮 geoactctx 接手状态（已归档）
 
 - 当前 active：none。当前阶段为 `post-run paired-screening decision pending`；不要自动启动新候选，不要自动读取新的 horizon/test，不要恢复旧候选。
 - review/base 版本：用户指定 GPT Pro review target 为 `main@818e18990b8bf1aee4e493d238d1d0f912936652`；文档里较早的 commit SHA 仅作历史记录，不要为了“记录最终 head SHA”反复 docs-only commit。

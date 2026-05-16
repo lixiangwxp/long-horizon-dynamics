@@ -1,10 +1,31 @@
 # 当前模型冲刺短状态
 
-最后更新：2026-05-16 22:04 CST。
+最后更新：2026-05-16 22:42 CST。
 
 用途：同一聊天窗口和 heartbeat 自动化优先读取本文件，避免反复完整读取 `Prompt.md` / `MODEL_DEV_HANDOFF.md` 造成上下文膨胀。只有新聊天、上下文压缩后状态不明、当前状态冲突、或需要历史复盘时，才读取完整交接文档。
 
 ## 当前 Active
+
+- 状态：active training。
+- 当前阶段：TCNLSTM actuator-only hidden context H10 正式训练监控；不要启动 H20/H50、true seq2seq、旧 GRUTCN rawtokgeo，也不要读取 horizon/test，除非用户或 GPT Pro 明确允许。
+- 实验 id：`modeldev_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1`
+- 代码 base：本地 `main@b9ae5d1b339e9e748af8690f73575e6de50b0c6b`，local `git status --short` clean；远程正式训练使用 clean worktree `/home/ubuntu/Developer/long-horizon-dynamics_run_b9ae5d`，HEAD=`b9ae5d1b339e9e748af8690f73575e6de50b0c6b`，`git status --short` clean。远端原 repo `/home/ubuntu/Developer/long-horizon-dynamics` 仍保留旧 dirty 现场，不作为正式训练代码目录。
+- 远程连接：使用 LAN `ubuntu@192.168.1.108`；`resources` 在 clean worktree 中通过 git-ignored symlink 指向原资源目录。
+- 远程代码 worktree：`/home/ubuntu/Developer/long-horizon-dynamics_run_b9ae5d`
+- 实验路径：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1`
+- train tmux：`modeldev_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1`
+- GPU watch tmux：`modeldev_gpu_watch_tcnlstm_actuator_only_ctx_H10`
+- train log：`logs/train_phase1.log`
+- GPU watch log：`logs/gpu_watch.log`
+- init checkpoint：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260510_tcnlstm_attitude_H10_from_trueanchor_e0_p1/checkpoints/model-epoch=03-best_valid_loss=0.46.pth`
+- 结构/假设：停止推进 `geoactctx H10 nulltrust additive/side-history` 分支后，收窄为 actuator-only hidden context。只使用 past-only `dmot,vbat` 估计 hidden actuator context，通过小尺度 gate delta 调制 `v/omega` 相关 correction gate；不使用 future context，不使用 `a/alpha`，不碰 q residual，不直接改 `delta_p/dtheta`，不训练完整 decoder/anchor。
+- 关键 CLI 配置：`model_type=tcnlstm`，`history_length=10`，`unroll_length=50`，`history_context_mode=dmot_vbat`，`tcnlstm_actuator_context=true`，`tcnlstm_actuator_context_scale_init=0.003`，只训练 `tcnlstm_actuator_context`，`batch_size=16`，`accumulate_grad_batches=32`，effective batch `512`，epochs `4`，`limit_train_batches=0.25`，`limit_val_batches=0.5`，`warmup_lr=1.5e-6`，`cosine_lr=4e-7`，`warmup_steps=50`，`cosine_steps=1500`，early stopping patience `2`，`min_delta=2e-5`，WANDB disabled。
+- smoke：`smoke_20260516_tcnlstm_actuator_only_ctx_H10_from_attitude_e3_p1` 已通过；checkpoint load 仅缺少当前代码新增/未启用参数与 `model.tcnlstm_actuator_context_*`，无旧 shape mismatch；one-batch train/valid finite，`best_valid_loss=0.1240352765`（smoke scale，不与正式 validation 比较）；`history_context_dim=5`，`history_context_fields=["dmot","vbat"]`，`uses_future_context=false`，`uses_a_alpha=false`，`actuator_context_affects_q_residual=false`；trainable names 仅 13 个 `model.tcnlstm_actuator_context_*`。
+- startup check（2026-05-16 22:41 CST）：训练 tmux 和 GPU watch tmux alive；日志确认 checkpoint load、trainable patterns 正确并进入 epoch 0；GPU 约 `1034/8188 MiB`、util `41%`，有 `/python3.10` compute 进程；暂未出现正式 validation row，暂未生成 `train_summary.json`；无 OOM/NaN/Traceback。
+- 必须监控诊断量：`actuator_context_norm`、`actuator_gate_mean`、`actuator_gate_max`、`context_delta_scale`、`vomega_gate_delta_norm`、`affects_q_residual`、`future_context`、`uses_a_alpha`；其中后三项必须保持 `0/no`。
+- Gate：TCNLSTM H10 attitude reference `best_valid_loss=0.4615005`、`valid_q=0.0412516`、`valid_v=0.1503205`、`valid_omega=0.2379201`。Green：`valid_v` 或 `valid_omega` 明显低于 reference，`valid_q` 不明显恶化，且 `best_valid_loss` 接近或优于 `0.4615005`；或 e1 `best_valid_loss <=0.46145` 且 q/v/omega 至少两个改善。Yellow：`0.46150 < best_valid_loss <=0.46220`，v/omega 至少一个改善，q 不明显恶化，可观察到 e1/e2，但不要自动读 horizon/test。Red：e0 `>0.46220`，或 q/omega/state_mse 同步明显变坏，或 actuator gate full dominate / norm 膨胀；停止，不读 horizon/test。
+
+## 上一轮 geoactctx 状态（已归档）
 
 - 状态：active none。
 - 当前阶段：post-run paired-screening decision pending（reference compatibility blocker）。
