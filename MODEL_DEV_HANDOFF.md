@@ -23,7 +23,7 @@
 - 当前代码/协议摘要：包含 eval no-silent-skip guard、`state_update_mode` wiring、history-only `dmot/vbat` context、adaptive history stats、GRUTCN adaptive history side branch、TCNLSTM side-history/null-trust switches，以及训练/eval summary 字段扩展。
 - 最近实验状态：无 active。`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_from_attitude_e3_p1` 已在 e0 前替换；`smoke_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 启动日志显示 one-batch finite，但远程 shell 不稳定，summary 未确认；不写正式结论。
 - 远程状态：Tailscale/WSL/SSH 曾出现 session 创建超时，网络/SSH 诊断 subagent 已介入；snapshot 完成前不要依赖远程启动训练。
-- 本次 snapshot commit：`<pending>` `arch: snapshot model sprint workflow and protocol changes`。commit/push 后回填最终 SHA，交给 GPT Pro review。
+- 本次 snapshot commit：`4f7309615dfe64ec59f2aa30ede17545202a3749` `arch: snapshot model sprint workflow and protocol changes`。push 后交给 GPT Pro review。
 - 下一步路线：等待 GPT Pro review 当前 snapshot 后，再决定是否恢复并启动 `modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1`，或按 TCNLSTM anchor-first / actuator context / FiLM-gate / H20 conservative 决策树调整。
 
 ## 最新代码/协议变更（2026-05-15 23:40 CST）

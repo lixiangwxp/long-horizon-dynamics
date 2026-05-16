@@ -7,10 +7,10 @@
 ## 当前 Active
 
 - 状态：当前无 active training/evaluation。
-- 最近代码状态：本地存在 coherent architecture/protocol dirty snapshot，正在整理并准备 commit/push。base SHA：`27be3448d7bbf3bda7f48522fa03c747477f8d1b`。
+- 最近代码状态：coherent architecture/protocol snapshot 已提交。base SHA：`27be3448d7bbf3bda7f48522fa03c747477f8d1b`；snapshot commit：`4f7309615dfe64ec59f2aa30ede17545202a3749` (`arch: snapshot model sprint workflow and protocol changes`)。
 - 本次 snapshot 文件：`AGENTS.md`、`MODEL_DEV_CURRENT.md`、`MODEL_DEV_HANDOFF.md`、`Prompt.md`、`scripts/config.py`、`scripts/eval.py`、`scripts/train.py`、`scripts/dynamics_learning/data.py`、`scripts/dynamics_learning/lighting.py`、`scripts/dynamics_learning/registry.py`、`scripts/dynamics_learning/models/grutcn.py`、`scripts/dynamics_learning/models/tcnlstm.py`。
 - 当前远程状态：无确认 active；Tailscale/WSL/SSH 曾出现 session 创建超时，网络诊断 subagent 已介入。snapshot 完成前不要启动训练、eval、horizon 或 locked audit。
-- 下一步：当前 snapshot 完成 `py_compile`、`git diff --check`、commit/push 后，给 GPT Pro review；review 后再决定是否恢复并启动 `modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 或其他候选。
+- 下一步：push 当前 snapshot 后，给 GPT Pro review；review 后再决定是否恢复并启动 `modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 或其他候选。
 
 ## 本轮代码/协议变更（2026-05-15 23:40 CST）
 
