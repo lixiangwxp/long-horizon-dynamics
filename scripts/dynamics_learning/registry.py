@@ -49,6 +49,22 @@ def get_model(args, input_size, output_size):
             args.kernel_size,
             args.dropout,
             args.num_layers,
+            adaptive_history_context=getattr(
+                args, "adaptive_history_context", False
+            ),
+            adaptive_history_short_window=getattr(
+                args, "adaptive_history_short_window", 10
+            ),
+            adaptive_history_mid_window=getattr(
+                args, "adaptive_history_mid_window", 25
+            ),
+            tcnlstm_side_history_scale_init=getattr(
+                args, "tcnlstm_side_history_scale_init", 0.05
+            ),
+            tcnlstm_side_history_selector_prior=getattr(
+                args, "tcnlstm_side_history_selector_prior", "uniform"
+            ),
+            history_context_dim=getattr(args, "history_context_dim", 0),
         ),
         "grutcn": GRUTCN(
             input_size,
@@ -64,6 +80,20 @@ def get_model(args, input_size, output_size):
             multi_step_kinematic_update=getattr(
                 args, "multi_step_kinematic_update", False
             ),
+            raw_token_geometric_delta=getattr(
+                args, "raw_token_geometric_delta", False
+            ),
+            adaptive_history_context=getattr(
+                args, "adaptive_history_context", False
+            ),
+            adaptive_history_short_window=getattr(
+                args, "adaptive_history_short_window", 10
+            ),
+            adaptive_history_mid_window=getattr(
+                args, "adaptive_history_mid_window", 25
+            ),
+            history_context_dim=getattr(args, "history_context_dim", 0),
+            history_context_mode=getattr(args, "history_context_mode", "none"),
         ),
     }
 

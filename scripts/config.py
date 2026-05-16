@@ -91,6 +91,34 @@ def parse_args():
     parser.add_argument("--physics_slack_margin", type=float, default=0.0)
     parser.add_argument("--multi_step_delta_vomega", type=str_to_bool, default=False)
     parser.add_argument("--multi_step_kinematic_update", type=str_to_bool, default=False)
+    parser.add_argument("--raw_token_geometric_delta", type=str_to_bool, default=False)
+    parser.add_argument("--adaptive_history_context", type=str_to_bool, default=False)
+    parser.add_argument("--adaptive_history_short_window", type=int, default=10)
+    parser.add_argument("--adaptive_history_mid_window", type=int, default=25)
+    parser.add_argument("--tcnlstm_side_history_scale_init", type=float, default=0.05)
+    parser.add_argument(
+        "--tcnlstm_side_history_selector_prior",
+        type=str,
+        default="uniform",
+        choices=["uniform", "null_short"],
+    )
+    parser.add_argument(
+        "--history_context_mode",
+        type=str,
+        default="none",
+        choices=["none", "dmot_vbat"],
+    )
+    parser.add_argument(
+        "--state_update_mode",
+        type=str,
+        default="residual_full_state",
+        choices=[
+            "residual_full_state",
+            "hard_vomega_kinematic",
+            "soft_vomega_kinematic",
+        ],
+    )
+    parser.add_argument("--state_update_soft_residual_scale", type=float, default=0.1)
 
     parser.add_argument("-p", "--plot", type=bool, default=False)
     parser.add_argument("--save_freq", type=int, default=50)

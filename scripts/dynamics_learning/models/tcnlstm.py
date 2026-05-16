@@ -49,6 +49,23 @@ class TCNLSTM(nn.Module):
         )
         self.use_recurrent_memory = use_recurrent_memory
         self.anchor_history_len = min(history_len, 10)
+        self.adaptive_history_context = bool(
+            kwargs.get("adaptive_history_context", False)
+        )
+        self.adaptive_history_short_window = int(
+            kwargs.get("adaptive_history_short_window", 10)
+        )
+        self.adaptive_history_mid_window = int(
+            kwargs.get("adaptive_history_mid_window", 25)
+        )
+        self.side_history_scale_init = float(
+            kwargs.get("tcnlstm_side_history_scale_init", 0.05)
+        )
+        self.side_history_selector_prior = kwargs.get(
+            "tcnlstm_side_history_selector_prior", "uniform"
+        )
+        self.history_context_dim = int(kwargs.get("history_context_dim", 0) or 0)
+        self.adaptive_history_stats = {}
 
         # TCN 期望输入布局为 [B, F, H]，forward 中会从 [B, H, F] permute 过去。
         self.encoder = TemporalConvNet(
@@ -335,6 +352,57 @@ class TCNLSTM(nn.Module):
         nn.init.zeros_(self.velocity_residual_decoder[-1].bias)
         self.velocity_residual_scale = nn.Parameter(torch.tensor(0.005))
 
+        if self.adaptive_history_context:
+            side_token_size = input_size + 12 + self.history_context_dim
+            self.tcnlstm_side_history_input_norm = nn.LayerNorm(side_token_size)
+            self.tcnlstm_side_history_encoder = nn.Sequential(
+                nn.Linear(side_token_size, self.decoder_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(self.decoder_hidden_size, self.decoder_hidden_size),
+                nn.GELU(),
+            )
+            self.tcnlstm_side_history_null = nn.Parameter(
+                torch.zeros(self.decoder_hidden_size)
+            )
+            selector_input_size = 4 * self.decoder_hidden_size
+            self.tcnlstm_side_history_selector = nn.Sequential(
+                nn.LayerNorm(selector_input_size),
+                nn.Linear(selector_input_size, self.decoder_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(self.decoder_hidden_size, 4),
+            )
+            side_residual_input_size = (
+                3 * self.decoder_hidden_size + self.tcn_channels
+            )
+            self.tcnlstm_side_history_residual_norm = nn.LayerNorm(
+                side_residual_input_size
+            )
+            self.tcnlstm_side_history_reliability = nn.Sequential(
+                nn.Linear(side_residual_input_size, self.decoder_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(self.decoder_hidden_size, self.decoder_hidden_size),
+                nn.Sigmoid(),
+            )
+            self.tcnlstm_side_history_residual = nn.Sequential(
+                nn.Linear(side_residual_input_size, self.decoder_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(self.decoder_hidden_size, self.decoder_hidden_size),
+            )
+            nn.init.zeros_(self.tcnlstm_side_history_residual[-1].weight)
+            nn.init.zeros_(self.tcnlstm_side_history_residual[-1].bias)
+            selector_out = self.tcnlstm_side_history_selector[-1]
+            if self.side_history_selector_prior == "null_short":
+                selector_out.bias.data.copy_(
+                    torch.tensor([1.5, 1.0, -1.0, -2.0])
+                )
+            self.tcnlstm_side_history_scale = nn.Parameter(
+                torch.tensor(self.side_history_scale_init)
+            )
+
         # 把最后一帧原始输入投影到 decoder hidden 维度，再和 attention context 拼接。
         self.input_proj = nn.Sequential(
             nn.Linear(input_size, self.decoder_hidden_size),
@@ -427,7 +495,105 @@ class TCNLSTM(nn.Module):
         context = torch.bmm(weights.unsqueeze(1), enc_seq).squeeze(1)
         return context
 
-    def forward(self, x, init_memory=True, return_attention=False):
+    def _quat_normalize(self, q):
+        return q / q.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+
+    def _quat_multiply(self, q1, q2):
+        w1, x1, y1, z1 = q1.unbind(dim=-1)
+        w2, x2, y2, z2 = q2.unbind(dim=-1)
+        return torch.stack(
+            [
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            ],
+            dim=-1,
+        )
+
+    def _quat_log(self, q):
+        q = self._quat_normalize(q)
+        q = torch.where(q[..., :1] < 0.0, -q, q)
+        vec = q[..., 1:]
+        vec_norm = torch.linalg.norm(vec, dim=-1, keepdim=True)
+        angle = 2.0 * torch.atan2(vec_norm, q[..., :1].clamp_min(1e-12))
+        return angle * vec / vec_norm.clamp_min(1e-12)
+
+    def _geometric_motion_delta(self, x):
+        delta = x.new_zeros(x.shape[0], x.shape[1], 12)
+        delta[:, 1:, 0:3] = x[:, 1:, 0:3] - x[:, :-1, 0:3]
+        delta[:, 1:, 3:6] = x[:, 1:, 3:6] - x[:, :-1, 3:6]
+        q_prev = self._quat_normalize(x[:, :-1, 6:10])
+        q_next = self._quat_normalize(x[:, 1:, 6:10])
+        q_prev_inv = torch.cat([q_prev[..., :1], -q_prev[..., 1:]], dim=-1)
+        delta[:, 1:, 6:9] = self._quat_log(self._quat_multiply(q_prev_inv, q_next))
+        delta[:, 1:, 9:12] = x[:, 1:, 10:13] - x[:, :-1, 10:13]
+        return delta
+
+    def _tail_mean(self, encoded, window):
+        window = min(max(int(window), 1), encoded.shape[1])
+        return encoded[:, -window:, :].mean(dim=1)
+
+    def _side_history_residual(
+        self, x, context_hist, history_context, context, decoder_feature
+    ):
+        if not self.adaptive_history_context:
+            return torch.zeros_like(history_context)
+
+        motion_delta = self._geometric_motion_delta(x)
+        token_parts = [x, motion_delta]
+        if self.history_context_dim > 0:
+            if context_hist is None:
+                context_hist = x.new_zeros(
+                    x.shape[0], x.shape[1], self.history_context_dim
+                )
+            token_parts.append(context_hist)
+        side_tokens = torch.cat(token_parts, dim=-1)
+        side_tokens = self.tcnlstm_side_history_input_norm(side_tokens)
+        encoded = self.tcnlstm_side_history_encoder(side_tokens)
+
+        null_context = self.tcnlstm_side_history_null.unsqueeze(0).expand(
+            x.shape[0], -1
+        )
+        short_context = self._tail_mean(encoded, self.adaptive_history_short_window)
+        mid_context = self._tail_mean(encoded, self.adaptive_history_mid_window)
+        full_context = encoded.mean(dim=1)
+        selector_contexts = torch.stack(
+            [null_context, short_context, mid_context, full_context], dim=1
+        )
+        selector_feature = selector_contexts.flatten(start_dim=1)
+        selector_weights = torch.softmax(
+            self.tcnlstm_side_history_selector(selector_feature), dim=-1
+        )
+        side_context = torch.sum(selector_weights.unsqueeze(-1) * selector_contexts, dim=1)
+
+        residual_input = self.tcnlstm_side_history_residual_norm(
+            torch.cat([side_context, history_context, context, decoder_feature], dim=-1)
+        )
+        reliability = self.tcnlstm_side_history_reliability(residual_input)
+        residual = self.tcnlstm_side_history_residual(residual_input)
+        side_delta = self.tcnlstm_side_history_scale * reliability * residual
+
+        weights = selector_weights.detach()
+        reliability_detached = reliability.detach()
+        self.adaptive_history_stats = {
+            "null_weight": weights[:, 0].mean(),
+            "short_weight": weights[:, 1].mean(),
+            "mid_weight": weights[:, 2].mean(),
+            "full_weight": weights[:, 3].mean(),
+            "gate_saturation": (weights.max(dim=-1).values > 0.7).float().mean(),
+            "reliability_mean": reliability_detached.mean(),
+            "reliability_std": reliability_detached.std(unbiased=False),
+            "reliability_saturation": (
+                (reliability_detached < 0.05) | (reliability_detached > 0.95)
+            )
+            .float()
+            .mean(),
+            "side_residual_norm": side_delta.detach().norm(dim=-1).mean(),
+        }
+        return side_delta
+
+    def forward(self, x, init_memory=True, return_attention=False, context_hist=None):
         if x.ndim != 3:
             raise ValueError(
                 f"TCNLSTM expected input shape [B, H, F], got {tuple(x.shape)}."
@@ -484,10 +650,14 @@ class TCNLSTM(nn.Module):
         context_gain = self.context_modulator(
             torch.cat([decoder_feature, context, history_context], dim=-1)
         )
+        side_history_delta = self._side_history_residual(
+            x, context_hist, history_context, context, decoder_feature
+        )
         head_input = (
             decoder_feature
             + self.shortcut_scale * projected_x_last
             + self.context_residual_scale * context_gain * context_residual
+            + side_history_delta
         )
         head_input = self.decoder_output_norm(head_input)
         context_delta = self.context_decoder(head_input)

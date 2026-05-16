@@ -62,13 +62,30 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
             args, "physics_reliability_scale", 10.0
         )
         self.physics_slack_margin = getattr(args, "physics_slack_margin", 0.0)
+        self.state_update_mode = getattr(args, "state_update_mode", "residual_full_state")
+        self.state_update_soft_residual_scale = getattr(
+            args, "state_update_soft_residual_scale", 0.1
+        )
 
         self.model = get_model(args, input_size, output_size)
         self.best_valid_loss = torch.tensor(float("inf"))
         self.validation_step_outputs = []
 
-    def forward(self, z_hist, init_memory):
-        return self.model(z_hist, init_memory)
+    def log_adaptive_history_stats(self, prefix):
+        stats = getattr(self.model, "adaptive_history_stats", {})
+        if not stats:
+            return
+        for key, value in stats.items():
+            self.log(
+                f"{prefix}_adaptive_history_{key}",
+                value.to(self.device),
+                on_step=True,
+                on_epoch=True,
+                logger=True,
+            )
+
+    def forward(self, z_hist, init_memory, context_hist=None):
+        return self.model(z_hist, init_memory, context_hist=context_hist)
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
@@ -139,6 +156,17 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
         return 2.0 * torch.atan2(vec_norm, scalar.clamp_min(1e-12))
 
     def apply_full_state_update(self, x_t, delta):
+        if self.state_update_mode == "hard_vomega_kinematic":
+            return self.apply_vomega_kinematic_update(x_t, delta, residual_scale=0.0)
+        if self.state_update_mode == "soft_vomega_kinematic":
+            return self.apply_vomega_kinematic_update(
+                x_t,
+                delta,
+                residual_scale=self.state_update_soft_residual_scale,
+            )
+        if self.state_update_mode != "residual_full_state":
+            raise ValueError(f"Unsupported state_update_mode: {self.state_update_mode}")
+
         delta_p = delta[:, 0:3]
         delta_v = delta[:, 3:6]
         dtheta = delta[:, 6:9]
@@ -155,6 +183,31 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
         q_next = self.quat_normalize(q_next)
 
         omega_next = x_t[:, 10:13] + delta_omega
+        return torch.cat([p_next, v_next, q_next, omega_next], dim=-1)
+
+    def apply_vomega_kinematic_update(self, x_t, delta, residual_scale):
+        dt = x_t.new_tensor(1.0 / float(self.args.sampling_frequency))
+        delta_v = delta[:, 3:6]
+        delta_omega = delta[:, 9:12]
+
+        v_t = x_t[:, 3:6]
+        omega_t = x_t[:, 10:13]
+        v_next = v_t + delta_v
+        omega_next = omega_t + delta_omega
+
+        p_next = x_t[:, 0:3] + 0.5 * dt * (v_t + v_next)
+        dtheta = 0.5 * dt * (omega_t + omega_next)
+        q_t = self.quat_normalize(x_t[:, 6:10])
+        q_next = self.quat_multiply(q_t, self.exp_quat(dtheta))
+
+        if residual_scale:
+            p_next = p_next + residual_scale * delta[:, 0:3]
+            q_next = self.quat_multiply(
+                self.quat_normalize(q_next),
+                self.exp_quat(residual_scale * delta[:, 6:9]),
+            )
+
+        q_next = self.quat_normalize(q_next)
         return torch.cat([p_next, v_next, q_next, omega_next], dim=-1)
 
     def full_state_loss(self, pred, target):
@@ -236,6 +289,9 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
     ):
         x_hist_curr = batch["x_hist"].float()
         u_hist_curr = batch["u_hist"].float()
+        context_hist = batch.get("context_hist")
+        if context_hist is not None:
+            context_hist = context_hist.float()
         u_roll = batch["u_roll"].float()
         y_future = batch["y_future"].float()
         loss_weights = self.rollout_loss_weights(
@@ -269,7 +325,11 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
         horizon = self.args.unroll_length
         for step in range(horizon):
             z_hist = torch.cat([x_hist_curr, u_hist_curr], dim=-1)
-            delta = self.forward(z_hist, init_memory=(step == 0))
+            delta = self.forward(
+                z_hist,
+                init_memory=(step == 0),
+                context_hist=context_hist,
+            )
             x_next_pred = self.apply_full_state_update(x_hist_curr[:, -1], delta)
 
             target = y_future[:, step]
@@ -327,6 +387,7 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
             rollout_loss_tail_weight=self.rollout_loss_tail_weight,
             physics_regularization=self.physics_loss_weight > 0.0,
         )
+        self.log_adaptive_history_stats("train")
         train_objective = loss
         log_train_objective = False
         if self.physics_loss_weight > 0.0:
@@ -405,6 +466,7 @@ class DynamicsLearning(pytorch_lightning.LightningModule):
 
     def validation_step(self, valid_batch, batch_idx, dataloader_idx=0):
         _, loss, metrics = self.full_state_rollout(valid_batch)
+        self.log_adaptive_history_stats("valid")
         self.validation_step_outputs.append(loss.detach())
         self.log(
             "valid_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True

@@ -95,14 +95,14 @@ def compute_horizon_metrics(pred_future, y_future):
 def summarize_horizon_metrics(rows, requested_horizons):
     summary = {}
     full_horizon = len(rows)
+    computed_horizons = []
+    skipped_horizons = []
 
     for horizon in requested_horizons:
         if horizon > full_horizon:
-            print(
-                f"Warning: requested horizon h={horizon} but unroll_length={full_horizon}; "
-                "skipping."
-            )
+            skipped_horizons.append(horizon)
             continue
+        computed_horizons.append(horizon)
         row = rows[horizon - 1]
         summary[f"h={horizon}"] = {name: row[name] for name in HORIZON_METRICS}
 
@@ -114,7 +114,22 @@ def summarize_horizon_metrics(rows, requested_horizons):
         name: float(sum(row[name] for row in rows)) for name in HORIZON_METRICS
     }
     summary["MSE_1_to_F"] = summary["mean_1_to_F"]["MSE_x"]
+    summary["actual_unroll_length"] = full_horizon
+    summary["requested_eval_horizons"] = requested_horizons
+    summary["computed_eval_horizons"] = computed_horizons
+    summary["skipped_eval_horizons"] = skipped_horizons
     return summary
+
+
+def validate_eval_horizon_coverage(unroll_length, requested_horizons):
+    max_horizon = max(requested_horizons) if requested_horizons else 0
+    if max_horizon > unroll_length:
+        raise ValueError(
+            "Requested eval_horizons require unroll_length >= "
+            f"{max_horizon}, got unroll_length={unroll_length}. "
+            "Train or select a checkpoint with enough rollout length before "
+            "claiming locked long-horizon metrics."
+        )
 
 
 def save_horizon_metrics(experiment_path, rows, summary):
@@ -169,7 +184,11 @@ def experiment_matches_request(experiment_path, requested_args, requested_filter
     for name in ("dataset", "model_type", "history_length", "unroll_length"):
         if not _matches_if_requested(loaded, requested_args, requested_filters, name):
             return False
-    for name in ("multi_step_delta_vomega", "multi_step_kinematic_update"):
+    for name in (
+        "multi_step_delta_vomega",
+        "multi_step_kinematic_update",
+        "raw_token_geometric_delta",
+    ):
         if not _matches_if_requested(loaded, requested_args, requested_filters, name):
             return False
     return True
@@ -340,6 +359,11 @@ def main(args, resources_path, data_path, experiment_path, model_path):
     args.resolved_accelerator = device_config["resolved"]
     print("Evaluating model on", args.device, "\n")
 
+    requested_horizons = parse_eval_horizons(
+        getattr(args, "eval_horizons", "1,10,25,50")
+    )
+    validate_eval_horizon_coverage(args.unroll_length, requested_horizons)
+
     wandb_logger = pytorch_lightning.loggers.WandbLogger(
         name="wandb_logger",
         project="dynamics_learning",
@@ -369,6 +393,11 @@ def main(args, resources_path, data_path, experiment_path, model_path):
 
     input_size = test_datasets[0].state_dim + test_datasets[0].control_dim
     output_size = resolve_output_size(args)
+    args.history_context_dim = (
+        test_datasets[0].context_dim
+        if getattr(args, "history_context_mode", "none") != "none"
+        else 0
+    )
     model = DynamicsLearning(
         args,
         resources_path,
@@ -397,9 +426,6 @@ def main(args, resources_path, data_path, experiment_path, model_path):
     print("Evaluated samples:", sample_count)
     print("Evaluated batches:", seen_batches)
 
-    requested_horizons = parse_eval_horizons(
-        getattr(args, "eval_horizons", "1,10,25,50")
-    )
     summary = summarize_horizon_metrics(rows, requested_horizons)
     summary.update(
         {
@@ -407,6 +433,11 @@ def main(args, resources_path, data_path, experiment_path, model_path):
             "model_type": args.model_type,
             "history_length": args.history_length,
             "unroll_length": args.unroll_length,
+            "state_update_mode": getattr(
+                args, "state_update_mode", "residual_full_state"
+            ),
+            "history_context_mode": getattr(args, "history_context_mode", "none"),
+            "history_context_dim": getattr(args, "history_context_dim", 0),
         }
     )
     csv_path, json_path = save_horizon_metrics(experiment_path, rows, summary)
@@ -466,6 +497,16 @@ if __name__ == "__main__":
         args.multi_step_delta_vomega = False
     if not hasattr(args, "multi_step_kinematic_update"):
         args.multi_step_kinematic_update = False
+    if not hasattr(args, "raw_token_geometric_delta"):
+        args.raw_token_geometric_delta = False
+    if not hasattr(args, "history_context_mode"):
+        args.history_context_mode = "none"
+    if not hasattr(args, "history_context_dim"):
+        args.history_context_dim = 0
+    if not hasattr(args, "state_update_mode"):
+        args.state_update_mode = "residual_full_state"
+    if not hasattr(args, "state_update_soft_residual_scale"):
+        args.state_update_soft_residual_scale = 0.1
 
     data_path = os.path.join(resources_path, "data", args.dataset)
     check_folder_paths(

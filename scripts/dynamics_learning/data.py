@@ -17,6 +17,7 @@ class DynamicsDataset(Dataset):
         self.unroll_length = args.unroll_length
         self.batch_size = args.batch_size
         self.model_type = args.model_type
+        self.history_context_mode = getattr(args, "history_context_mode", "none")
         self.schema_mode = "full_state_trajectory"
 
         self.hdf5_path = os.path.join(data_path, hdf5_file)
@@ -75,7 +76,20 @@ class DynamicsDataset(Dataset):
         self.x = np.concatenate(state_parts, axis=1).astype(np.float32, copy=False)
         self.u = data[:, u_start:u_end].astype(np.float32, copy=False)
 
-        if "context" in self.feature_slices:
+        context_mode = getattr(self, "history_context_mode", "none")
+        if context_mode == "dmot_vbat":
+            context_parts = []
+            for group_name in ("dmot", "vbat"):
+                if group_name not in self.feature_slices:
+                    raise ValueError(
+                        f"{self.hdf5_path} feature_slices is missing {group_name}."
+                    )
+                start, end = self.feature_slices[group_name]
+                context_parts.append(data[:, start:end])
+            self.context = np.concatenate(context_parts, axis=1).astype(
+                np.float32, copy=False
+            )
+        elif "context" in self.feature_slices:
             context_start, context_end = self.feature_slices["context"]
             self.context = data[:, context_start:context_end].astype(
                 np.float32, copy=False

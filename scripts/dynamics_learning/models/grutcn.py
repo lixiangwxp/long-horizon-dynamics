@@ -43,6 +43,20 @@ class GRUTCN(nn.Module):
         self.multi_step_kinematic_update = kwargs.get(
             "multi_step_kinematic_update", False
         )
+        self.raw_token_geometric_delta = kwargs.get(
+            "raw_token_geometric_delta", False
+        )
+        self.adaptive_history_context = kwargs.get(
+            "adaptive_history_context", False
+        )
+        self.adaptive_history_short_window = int(
+            kwargs.get("adaptive_history_short_window", 10)
+        )
+        self.adaptive_history_mid_window = int(
+            kwargs.get("adaptive_history_mid_window", 25)
+        )
+        self.history_context_dim = int(kwargs.get("history_context_dim", 0) or 0)
+        self.history_context_mode = kwargs.get("history_context_mode", "none")
         self.num_layers = num_layers
         self.tcn_channels = encoder_sizes[-1]
         self.decoder_hidden_size = (
@@ -108,6 +122,91 @@ class GRUTCN(nn.Module):
             batch_first=True,
         )
         self.history_norm = nn.LayerNorm(self.decoder_hidden_size)
+        if self.history_context_dim > 0:
+            self.history_context_input_norm = nn.LayerNorm(self.history_context_dim)
+            self.history_context_proj = nn.Sequential(
+                nn.Linear(self.history_context_dim, self.decoder_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+            self.history_context_gru = nn.GRU(
+                input_size=self.decoder_hidden_size,
+                hidden_size=self.decoder_hidden_size,
+                num_layers=1,
+                batch_first=True,
+            )
+            history_context_fusion_size = 3 * self.decoder_hidden_size
+            self.history_context_fusion_norm = nn.LayerNorm(
+                history_context_fusion_size
+            )
+            self.history_context_gate = nn.Sequential(
+                nn.Linear(history_context_fusion_size, self.decoder_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(self.decoder_hidden_size, self.decoder_hidden_size),
+                nn.Sigmoid(),
+            )
+            self.history_context_delta = nn.Sequential(
+                nn.Linear(history_context_fusion_size, self.decoder_hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(self.decoder_hidden_size, self.decoder_hidden_size),
+            )
+            nn.init.zeros_(self.history_context_delta[-1].weight)
+            nn.init.zeros_(self.history_context_delta[-1].bias)
+            self.history_context_scale = nn.Parameter(torch.tensor(0.02))
+
+        self.adaptive_history_stats = {}
+        if self.adaptive_history_context:
+            adaptive_history_size = self.decoder_hidden_size
+            adaptive_history_heads = 4 if adaptive_history_size % 4 == 0 else 1
+            self.adaptive_history_input_norm = nn.LayerNorm(2 * input_size)
+            self.adaptive_history_proj = nn.Linear(
+                2 * input_size, adaptive_history_size
+            )
+            self.adaptive_history_pos = nn.Parameter(
+                torch.zeros(1, history_len, adaptive_history_size)
+            )
+            adaptive_history_layer = nn.TransformerEncoderLayer(
+                d_model=adaptive_history_size,
+                nhead=adaptive_history_heads,
+                dim_feedforward=2 * adaptive_history_size,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+            )
+            self.adaptive_history_encoder = nn.TransformerEncoder(
+                adaptive_history_layer, num_layers=1
+            )
+            self.adaptive_history_null_context = nn.Parameter(
+                torch.zeros(adaptive_history_size)
+            )
+            adaptive_selector_size = 5 * adaptive_history_size
+            self.adaptive_history_gate_norm = nn.LayerNorm(adaptive_selector_size)
+            self.adaptive_history_gate = nn.Sequential(
+                nn.Linear(adaptive_selector_size, adaptive_history_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(adaptive_history_size, 4),
+            )
+            adaptive_fusion_size = 5 * adaptive_history_size
+            self.adaptive_history_fusion_norm = nn.LayerNorm(adaptive_fusion_size)
+            self.adaptive_history_reliability = nn.Sequential(
+                nn.Linear(adaptive_fusion_size, adaptive_history_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(adaptive_history_size, adaptive_history_size),
+                nn.Sigmoid(),
+            )
+            self.adaptive_history_delta = nn.Sequential(
+                nn.Linear(adaptive_fusion_size, adaptive_history_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(adaptive_history_size, adaptive_history_size),
+            )
+            nn.init.zeros_(self.adaptive_history_delta[-1].weight)
+            nn.init.zeros_(self.adaptive_history_delta[-1].bias)
+            self.adaptive_history_scale = nn.Parameter(torch.tensor(0.05))
 
         self.state_initializer = nn.Sequential(
             nn.Linear(
@@ -420,6 +519,49 @@ class GRUTCN(nn.Module):
         ).unsqueeze(1)
         return enc_seq + self.latent_se_scale * enc_seq * channel_delta
 
+    def _quat_normalize(self, q):
+        return q / q.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+
+    def _quat_multiply(self, q1, q2):
+        w1, x1, y1, z1 = q1.unbind(dim=-1)
+        w2, x2, y2, z2 = q2.unbind(dim=-1)
+        return torch.stack(
+            [
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            ],
+            dim=-1,
+        )
+
+    def _quat_log_delta(self, q_prev, q_next):
+        q_prev = self._quat_normalize(q_prev)
+        q_next = self._quat_normalize(q_next)
+        q_prev_inv = torch.cat([q_prev[..., :1], -q_prev[..., 1:]], dim=-1)
+        q_delta = self._quat_normalize(self._quat_multiply(q_prev_inv, q_next))
+        q_delta = torch.where(q_delta[..., :1] < 0.0, -q_delta, q_delta)
+        vec = q_delta[..., 1:]
+        vec_norm = torch.linalg.norm(vec, dim=-1, keepdim=True)
+        angle = 2.0 * torch.atan2(vec_norm, q_delta[..., :1].clamp_min(1e-12))
+        scale = torch.where(
+            vec_norm > 1e-6,
+            angle / vec_norm.clamp_min(1e-6),
+            torch.full_like(vec_norm, 2.0),
+        )
+        return scale * vec
+
+    def _raw_motion_delta(self, x):
+        dx = torch.zeros_like(x)
+        dx[:, 1:, :] = x[:, 1:, :] - x[:, :-1, :]
+        if self.raw_token_geometric_delta and self.input_size >= 13:
+            dtheta = self._quat_log_delta(x[:, :-1, 6:10], x[:, 1:, 6:10])
+            dx[:, 1:, 6:10] = torch.cat(
+                [torch.zeros_like(dtheta[..., :1]), dtheta],
+                dim=-1,
+            )
+        return dx
+
     def _encode(self, x):
         x_anchor = x[:, -self.anchor_history_len :, :]
         enc_input = x_anchor.permute(0, 2, 1).contiguous()
@@ -431,9 +573,114 @@ class GRUTCN(nn.Module):
         history_context = self.history_norm(history_state[-1])
         return enc_seq, history_context
 
+    def _apply_history_context(self, context_hist, history_context):
+        if self.history_context_dim <= 0 or context_hist is None:
+            return history_context
+        if context_hist.shape[-1] != self.history_context_dim:
+            raise ValueError(
+                "GRUTCN expected context_hist feature dim "
+                f"{self.history_context_dim}, got {context_hist.shape[-1]}."
+            )
+
+        context_tokens = self.history_context_proj(
+            self.history_context_input_norm(context_hist)
+        )
+        _, context_state = self.history_context_gru(context_tokens)
+        context_summary = context_state[-1]
+        fusion = self.history_context_fusion_norm(
+            torch.cat(
+                [
+                    history_context,
+                    context_summary,
+                    history_context - context_summary,
+                ],
+                dim=-1,
+            )
+        )
+        return (
+            history_context
+            + self.history_context_scale
+            * self.history_context_gate(fusion)
+            * self.history_context_delta(fusion)
+        )
+
+    def _adaptive_history_tokens(self, x):
+        dx = self._raw_motion_delta(x)
+        tokens = torch.cat([x, dx], dim=-1)
+        tokens = self.adaptive_history_proj(
+            self.adaptive_history_input_norm(tokens)
+        )
+        tokens = tokens + self.adaptive_history_pos[:, : x.shape[1], :]
+        return self.adaptive_history_encoder(tokens)
+
+    def _record_adaptive_history_stats(self, weights, reliability):
+        max_weight = weights.max(dim=-1).values
+        stats = {
+            "null_weight": weights[:, 0].mean().detach(),
+            "short_weight": weights[:, 1].mean().detach(),
+            "mid_weight": weights[:, 2].mean().detach(),
+            "full_weight": weights[:, 3].mean().detach(),
+            "gate_std": weights.std(dim=0).mean().detach(),
+            "gate_saturation": (max_weight > 0.85).float().mean().detach(),
+            "reliability_mean": reliability.mean().detach(),
+            "reliability_std": reliability.std().detach(),
+            "reliability_saturation": (
+                ((reliability < 0.05) | (reliability > 0.95)).float().mean().detach()
+            ),
+        }
+        self.adaptive_history_stats = stats
+
+    def _apply_adaptive_history_context(self, x, history_context):
+        if not self.adaptive_history_context:
+            self.adaptive_history_stats = {}
+            return history_context
+
+        tokens = self._adaptive_history_tokens(x)
+        short_context = self._window_mean(
+            tokens, self.adaptive_history_short_window
+        )
+        mid_context = self._window_mean(tokens, self.adaptive_history_mid_window)
+        full_context = tokens.mean(dim=1)
+        null_context = self.adaptive_history_null_context.unsqueeze(0).expand_as(
+            short_context
+        )
+        gate_input = self.adaptive_history_gate_norm(
+            torch.cat(
+                [history_context, null_context, short_context, mid_context, full_context],
+                dim=-1,
+            )
+        )
+        weights = torch.softmax(self.adaptive_history_gate(gate_input), dim=-1)
+        selected_context = torch.sum(
+            weights.unsqueeze(-1)
+            * torch.stack(
+                [null_context, short_context, mid_context, full_context], dim=1
+            ),
+            dim=1,
+        )
+        fusion = self.adaptive_history_fusion_norm(
+            torch.cat(
+                [
+                    history_context,
+                    selected_context,
+                    short_context,
+                    mid_context,
+                    full_context,
+                ],
+                dim=-1,
+            )
+        )
+        reliability = self.adaptive_history_reliability(fusion)
+        self._record_adaptive_history_stats(weights, reliability)
+        return (
+            history_context
+            + self.adaptive_history_scale
+            * reliability
+            * self.adaptive_history_delta(fusion)
+        )
+
     def _encode_raw_tokens(self, x, position):
-        dx = torch.zeros_like(x)
-        dx[:, 1:, :] = x[:, 1:, :] - x[:, :-1, :]
+        dx = self._raw_motion_delta(x)
         raw_tokens = torch.cat([x, dx], dim=-1)
         raw_tokens = self.raw_token_proj(self.raw_token_input_norm(raw_tokens))
         raw_tokens = raw_tokens + position[:, : x.shape[1], :]
@@ -578,7 +825,7 @@ class GRUTCN(nn.Module):
     def reset_memory(self):
         self.memory = None
 
-    def forward(self, x, init_memory=True, return_attention=False):
+    def forward(self, x, init_memory=True, return_attention=False, context_hist=None):
         if x.ndim != 3:
             raise ValueError(
                 f"GRUTCN expected input shape [B, H, F], got {tuple(x.shape)}."
@@ -594,6 +841,8 @@ class GRUTCN(nn.Module):
 
         batch_size = x.shape[0]
         enc_seq, history_context = self._encode(x)
+        history_context = self._apply_history_context(context_hist, history_context)
+        history_context = self._apply_adaptive_history_context(x, history_context)
         fresh_state = self._init_hidden(enc_seq, history_context)
 
         if (
@@ -682,7 +931,7 @@ class GRUTCN(nn.Module):
             base_delta
             + self.context_delta_scale * correction_gate * context_delta
         ) * self.output_gain
-        dx_last = x[:, -1, :] - x[:, -2, :]
+        dx_last = self._raw_motion_delta(x)[:, -1, :]
         velocity_input = self.velocity_observer_norm(
             torch.cat(
                 [

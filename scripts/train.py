@@ -174,6 +174,11 @@ def main(args, resources_path, data_path, experiment_path):
 
     input_size = train_dataset.state_dim + train_dataset.control_dim
     output_size = resolve_output_size(args)
+    args.history_context_dim = (
+        train_dataset.context_dim
+        if getattr(args, "history_context_mode", "none") != "none"
+        else 0
+    )
     if args.predictor_type == "full_state":
         if input_size != 17 or output_size != 12:
             raise ValueError(
@@ -271,6 +276,18 @@ def main(args, resources_path, data_path, experiment_path):
             "physics_omega_smooth_weight": args.physics_omega_smooth_weight,
             "physics_reliability_scale": args.physics_reliability_scale,
             "physics_slack_margin": args.physics_slack_margin,
+            "state_update_mode": args.state_update_mode,
+            "state_update_soft_residual_scale": args.state_update_soft_residual_scale,
+            "raw_token_geometric_delta": args.raw_token_geometric_delta,
+            "adaptive_history_context": args.adaptive_history_context,
+            "adaptive_history_short_window": args.adaptive_history_short_window,
+            "adaptive_history_mid_window": args.adaptive_history_mid_window,
+            "tcnlstm_side_history_scale_init": args.tcnlstm_side_history_scale_init,
+            "tcnlstm_side_history_selector_prior": (
+                args.tcnlstm_side_history_selector_prior
+            ),
+            "history_context_mode": args.history_context_mode,
+            "history_context_dim": args.history_context_dim,
             "best_model_path": checkpoint_callback.best_model_path,
             "best_model_score": (
                 float(checkpoint_callback.best_model_score.cpu())

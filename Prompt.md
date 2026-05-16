@@ -1,6 +1,6 @@
 # Long-Horizon Dynamics 长期记忆
 
-最后更新：2026-05-14 CST。
+最后更新：2026-05-16 CST。
 
 本文档是 Codex 在本项目里的压缩长期记忆。完整历史流水账已经归档到：
 
@@ -17,18 +17,107 @@
 
 不要在这里记录密钥、token、私有登录信息。
 
-## 当前 Active（2026-05-14 12:03 CST）
+## 当前状态（2026-05-16 12:42 CST）
 
-- 当前 active training：`modeldev_20260514_grutcn_multistepdelta_u50_H20_from_vomegaweight_e3_p1`
-- 远程路径：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260514_grutcn_multistepdelta_u50_H20_from_vomegaweight_e3_p1`
-- 训练 tmux：`modeldev_grutcn_multistepdelta_u50_H20_from_vomegaweight_e3_p1`
-- GPU watch tmux：`modeldev_gpu_watch_grutcn_multistepdelta_u50_H20`
-- log：`logs/train_phase1.log` / `logs/gpu_watch.log`
-- init checkpoint：`/home/ubuntu/Developer/long-horizon-dynamics/resources/experiments/modeldev_20260514_grutcn_vomegaweight_cont_H20_from_vomega_e3_p1/checkpoints/model-epoch=03-best_valid_loss=0.68.pth`
-- 结构：`grutcn` 的 `multi_step_delta_vomega` 真正长时域候选，`unroll_length=50`，`history_length=20`，`batch_size=16`，`accumulate_grad_batches=32`，`epochs=4`，`warmup_lr=8e-8`，`cosine_lr=3e-8`，`early_stopping=true`，`patience=2`
-- 训练状态：刚刚完成了错误启动的清理和重启；第一次启动因 checkpoint 文件名少写一个 `=` 失败，已清理对应空运行目录和 GPU watch tmux。当前这次重启已成功加载 checkpoint，trainable 参数仅 `model.multi_step_*`，只缺新增 `multi_step_*` key，无旧主路径 shape mismatch；训练已经进入 epoch 0，GPU 约 `1.8GB/8.2GB`，尚未出现 validation row
-- 决策：先等 e0/e1 的 unweighted `valid_v/valid_omega/valid_q`；只有在自然结束或选定 checkpoint 后才做 horizon/test locked audit。若聚合指标不优于现有 GRUTCN best，就停止这条结构分支，转真正 `multi-step delta_v/delta_omega predictor` 审计
-- 读 horizon/test：当前未读；后续若读取，必须记录 experiment id、checkpoint、关键指标、是否影响结构决策和结论
+- 当前无已确认 active training/evaluation。远程 `desktop-0r0t1bo-1 / 100.106.154.6` 在 `tailscale status` 中显示 active，但本机 Codex 对 `gpu4060`/`gpu4060-ts` SSH 与 `tailscale ping 100.106.154.6` 均 timeout。局域网 `192.168.1.108` 可 ping，22 端口返回 Ubuntu OpenSSH banner，公钥认证可通过，但远端 session 创建/命令执行阶段超时；单独执行 `hostname`/`pwd`/`whoami` 也会挂住。按远程 WSL/sshd/session 创建异常处理，不判定实验失败；已启动网络/SSH 诊断 subagent，主线暂时等待远程 shell 恢复。
+- `modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_from_attitude_e3_p1`（`scale_init=0.01`）已在 e0 validation 前按新 Pro 建议停止并替换，原因是 additive side residual 首轮建议用 `0.003/0.005`，`0.01` 留给 FiLM/gate；该候选未读 horizon/test，artifacts 保留。
+- `smoke_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1` 已启动，命令日志显示 one-batch train/valid finite，但远程在读取 `train_summary.json` 前不可达；下一轮先确认 summary/CSV gate stats 后再启动正式训练。
+- 下一步正式候选：`modeldev_20260516_tcnlstm_geoactctx_H10_nulltrust_s005_from_attitude_e3_p1`。配置：TCNLSTM H10，`unroll_length=50`，只训 `tcnlstm_side_history`，`selector_prior=null_short`，`tcnlstm_side_history_scale_init=0.005`，`warmup_lr=1.5e-6`、`cosine_lr=4e-7`，batch `16`、accumulate `32`、epochs `4`，`limit_train_batches=0.25`、`limit_val_batches=0.5`，past-only `dmot/vbat` context，不用 future context，不用 `a/alpha`。
+- 当前路线按 2026-05-16 用户/Pro 建议：TCNLSTM anchor-first，不急着 seq2seq。H10 有正信号才上 H20 conservative；H10 v/omega 有信号但 q/state_mse 被破坏则改 FiLM/gate；H10 无 v/omega 信号且 q/omega 同步变坏则转 actuator-only context；true seq2seq `Delta v[1:F]/Delta omega[1:F]` 只作最后 fallback。
+- Gate：TCNLSTM H10 attitude reference `best_valid_loss=0.4615005`、`valid_q=0.0412516`、`valid_v=0.1503205`、`valid_omega=0.2379201`。Green：e0 `<=0.46155`，或 e1 `<=0.46145` 且 q/omega/v 至少两个指标改善；Yellow：`0.46155 < e0 <=0.46220` 且 q/omega 没有同步明显变坏，最多观察 e1；Red：e0 `>0.46220`，或 q/omega/state_mse 同步明显变坏，停止不读 horizon/test。必须记录 `side_residual_norm`、gate mean、null gate ratio、是否作用到 q residual、是否只影响 v/omega gate。
+
+### code snapshot - 2026-05-16 12:55 CST
+
+- 类型：architecture/protocol snapshot。
+- 目的：把当前 dirty working tree 固化为可追踪版本，供 GPT Pro review。
+- base SHA：`27be3448d7bbf3bda7f48522fa03c747477f8d1b`。
+- 改动文件：
+  - `AGENTS.md`
+  - `MODEL_DEV_CURRENT.md`
+  - `MODEL_DEV_HANDOFF.md`
+  - `Prompt.md`
+  - `scripts/config.py`
+  - `scripts/eval.py`
+  - `scripts/train.py`
+  - `scripts/dynamics_learning/data.py`
+  - `scripts/dynamics_learning/lighting.py`
+  - `scripts/dynamics_learning/registry.py`
+  - `scripts/dynamics_learning/models/grutcn.py`
+  - `scripts/dynamics_learning/models/tcnlstm.py`
+- 主要变化：
+  - 补齐 `Git / Commit / Experiment Version Rules`，明确 Architecture Mode / Tuning Mode、dirty tree、summary version、GPT Pro review 和禁止 `git add .` 规则。
+  - 固化当前 model sprint architecture/protocol snapshot：eval no-silent-skip guard、state_update_mode wiring、history-only `dmot/vbat` context、adaptive history stats、GRUTCN adaptive history side branch、TCNLSTM side-history/null-trust switches 和 train/eval summary 字段。
+  - 后续正式训练 / locked audit / GPT Pro review 必须可追溯到 commit SHA。
+- 检查：
+  - py_compile: passed
+  - git diff --check: passed
+- commit:
+  - `<pending>` `arch: snapshot model sprint workflow and protocol changes`
+- 当前 active:
+  - none
+- 下一步：
+  - 等 GPT Pro review 当前 snapshot 后，再决定是否启动下一轮候选。
+
+## 代码/协议变更（2026-05-15 23:40 CST）
+
+- 改动文件：`scripts/dynamics_learning/models/tcnlstm.py`、`scripts/dynamics_learning/registry.py`。
+- `TCNLSTM.forward()` 现在接受 `context_hist=None`，避免 `DynamicsLearning.forward(..., context_hist=...)` 在 TCNLSTM 上 TypeError。
+- 新增默认关闭的 `adaptive_history_context` 支持：`tcnlstm_side_history_*` 分支把 H50 raw state/control、SO(3) geometric motion delta 和 past-only `dmot/vbat` 编码为 side context，通过 `null/short/mid/full` selector 与 reliability gate 产生 zero-init residual 注入 `head_input`。旧 checkpoint 初始为 no-op；旧路径不启用时行为不变。
+- `registry.py` 将 `adaptive_history_context`、窗口参数和 `history_context_dim` 传给 TCNLSTM。检查：本地/远程 `py_compile` 和 `git diff --check` 通过；local/remote SHA256 一致；远程 dummy forward 与 one-batch smoke 通过。
+- 2026-05-16 补充默认不改变旧行为的 null-trust 开关：`--tcnlstm_side_history_scale_init`（默认 `0.05`）和 `--tcnlstm_side_history_selector_prior uniform|null_short`（默认 `uniform`）。本地/远程 `py_compile`、`git diff --check` 和 H10 null-trust smoke 均通过；使用该 trick/协议变更的理由是上一轮 H50 side branch 自由 selector 倾向打开 full context 且 validation 退化，本轮需要先验证“弱注入 + null/short 先验”能否保住 anchor。
+
+## 最近停止候选（2026-05-16 10:18 CST）
+
+- `modeldev_20260515_tcnlstm_geoactctx_H50_from_attitude_e3_p1`：early_stopped=true，best=`0.4656468630`（epoch=2），e2 `valid_q_loss_epoch=0.0416224226`、`valid_v_loss_epoch=0.1515640318`、`valid_omega_loss_epoch=0.2400307506`，对比 TCNLSTM H10 attitude baseline 整体回退，按 gate 不跑 horizon/test；训练 tmux 已退出，GPU watch 已清理，artifacts 保留。
+
+## 最近停止候选（2026-05-15 23:32 CST）
+
+- `modeldev_20260515_grutcn_adaptivehist_H50_from_vomega_e3_p1` 已按 e1 validation gate 停止，不跑 horizon/test。e0->e1 `valid_loss_epoch=0.6879014373 -> 0.6870185733`，e1 `valid_v=0.1602650136`、`valid_q=0.0390152447`、`valid_omega=0.2308619916`、`valid_state_mse=0.2525024712`，仍明显差于 current GRUTCN best；adaptive gate e1 `null=0.0084`、`short=0.7560`、`full=0.1937`、`gate_saturation=0.3051`，长历史 side branch 没显示泛化收益。训练/watch tmux 已停止，artifacts 保留。
+
+## 代码/协议变更（2026-05-15 16:45 CST）
+
+- 改动文件：`scripts/dynamics_learning/models/grutcn.py`、`scripts/config.py`、`scripts/dynamics_learning/registry.py`、`scripts/dynamics_learning/lighting.py`、`scripts/train.py`。
+- 新增 `--adaptive_history_context`、`--adaptive_history_short_window`、`--adaptive_history_mid_window`，默认关闭保持旧行为。GRUTCN 新增 checkpoint-safe `adaptive_history_*`：H20 anchor 主路径不变，长历史只走 raw-token Transformer side branch、`null/short/mid/full` selector、reliability gate、zero-init residual。
+- `DynamicsLearning` 新增 `log_adaptive_history_stats()`，训练/验证 CSVLogger 记录 gate mean/std/saturation 与 reliability mean/std/saturation；`train_summary.json` 写入 adaptive history 配置。
+- 检查/同步：本地 `py_compile` 通过；远程 `python3 -m py_compile` 通过；远程 conda env dummy forward finite；远程脚本级 smoke 通过。同步中曾误建远程 `scripts/scripts/` 副本，已只删除该误同步副本并重新同步正确路径。
+
+## 代码/协议变更（2026-05-15 14:10 CST）
+
+- 改动文件：`scripts/dynamics_learning/models/grutcn.py`、`scripts/config.py`、`scripts/dynamics_learning/data.py`、`scripts/dynamics_learning/registry.py`、`scripts/dynamics_learning/lighting.py`、`scripts/train.py`、`scripts/eval.py`。
+- 新增 `--history_context_mode none|dmot_vbat`，默认 `none` 保持旧行为；`dmot_vbat` 模式下 `DynamicsDataset` 只选历史 `dmot/vbat` 作为 `context_hist`，`DynamicsLearning.full_state_rollout()` 将 `context_hist` 传给模型，GRUTCN 新增 gated/zero-init `history_context_*` 分支修正 `history_context`；train/eval summary 记录 `history_context_mode` 与 `history_context_dim`。
+- 检查/同步：本地 `py_compile` 通过；远程 `py_compile` 通过；local/remote SHA256 一致；远程 smoke 通过，确认 `history_context_dim=5`、trainable count `19`、one-batch train/valid finite。
+
+## 刚停止候选（2026-05-15 14:05 CST）
+
+- `modeldev_20260515_grutcn_dmotvbatctx_H20_from_vomega_e3_p1` 已按 validation gate 停止，不跑 horizon/test。结构为 `history_context_mode=dmot_vbat`、past-only `dmot/vbat` context、`state_update_mode=residual_full_state`，只训练 `history_context`（trainable count `19`）。e0/e1 `valid_loss_epoch=0.6827901006 -> 0.6828653216`，e1 `valid_v=0.1596235037`、`valid_omega=0.2291074544`、`valid_q=0.0388034955`、`valid_state_mse=0.2502800524`，相对 current best 的 v/omega/q/state_mse 均无正信号。训练 tmux/GPU watch 与匹配实验路径的训练进程已停止，artifacts 保留。结论：当前 tiny context branch 失败；下一步先诊断 context 字段/归一化/分支表达力，再决定 adaptive history selector 或 TCNLSTM 迁移。
+- `modeldev_20260515_grutcn_rawtokgeo_H20_from_vomega_e3_p1` 已按 validation gate/early stop 判失败，不跑 horizon/test。训练 early-stopped，best 停在 e0：e0/e1/e2 `valid_loss_epoch=0.6829264164 -> 0.6830326319 -> 0.6831049919`，e2 `valid_v=0.1597713530`、`valid_q=0.0388241075`、`valid_omega=0.2290891409`、`valid_state_mse=0.2502748668`；相对 current best 的 `valid_loss/v/q/state_mse` 均无正信号。训练 tmux 已退出，GPU watch 已停止，artifacts 保留；horizon/test 未读取。结论：SO(3) raw-token representation fix 单独未带来 validation 正信号，不做 rawtokgeo continuation，转 `dmot/vbat` context。
+- `modeldev_20260515_grutcn_softvomega_H20_from_hard_e1_p1` 已按 e0 validation gate 停止，不跑 horizon/test。e0 `valid_v=0.1629530936`、`valid_omega=0.2299810797`、`valid_q=0.0454349183`、`valid_state_mse=0.2749448121`，相对 hard e1 和当前 GRUTCN best 均明显恶化。只停止对应训练/GPU watch tmux，artifacts 保留。
+- `modeldev_20260514_grutcn_hardvomega_multistep_H20_from_vomega_e3_p1` 已按 gate 停止，不跑 horizon/test。e1 曾反转，但 e2 把 v/omega 信号打回：e2 `valid_v=0.1598088145`、`valid_omega=0.2292566448`，相对当前 best reference 明显回退。只停止对应训练/GPU watch tmux，artifacts 保留。
+- `modeldev_20260514_grutcn_multistepdelta_u50_H20_from_vomegaweight_e3_p1` 已按 validation gate 停止，不跑 horizon/test。e0/e1 的 v/omega/q 相对当前 best 没有反转；e1 `valid_loss_epoch=0.4708360136`、`valid_v=0.1596593559`、`valid_q=0.0388144702`、`valid_omega=0.2290989012`。只停止对应训练/GPU watch tmux，artifacts 保留。
+
+## 代码/协议变更（2026-05-14 17:55 CST）
+
+- 改动文件：`scripts/eval.py`、`scripts/config.py`、`scripts/dynamics_learning/lighting.py`、`scripts/train.py`。
+- `eval no-silent-skip guard`：`eval.py` 现在会在 eval 开始前检查 `unroll_length >= max(eval_horizons)`，避免再出现 `unroll_length=2` 却请求 h50 时 silent skip；`horizon_summary.json` 记录 `actual_unroll_length`、`requested_eval_horizons`、`computed_eval_horizons`、`skipped_eval_horizons` 和 `state_update_mode`。
+- `state_update_mode`：新增 `residual_full_state`（默认旧行为）、`hard_vomega_kinematic`、`soft_vomega_kinematic`；hard 模式只用 `delta_v/delta_omega` 更新 v/omega，再用梯形积分恢复 p 和 q；soft 模式在 hard 结果上加小 `delta_p/dtheta` residual，scale 由 `--state_update_soft_residual_scale` 控制。`train_summary.json` 会写入这两个字段。
+- 检查/同步：本地 `python -m py_compile scripts/config.py scripts/dynamics_learning/lighting.py scripts/eval.py scripts/train.py` 通过；已用 `rsync -avR` 同步到 `gpu4060`；本地/远程 SHA256 一致；远程 py_compile 通过；远程 smoke 确认 guard 会拒绝 `unroll_length=2 + eval_horizons=1,10,25,50`，50 步 summary 字段正常，hard/soft kinematic update 输出有限且 quaternion norm 为 1。
+- 后续决策：hard/soft vomega 已完成并失败，保留为 ablation 结论；当前按 2026-05-15 Pro 更新，先完成 rawtokgeo，再依次考虑一次 conservative continuation、history-only `dmot/vbat` context、adaptive history selector、TCNLSTM 迁移，true seq2seq 放到最后 fallback。
+
+## GPT Pro 策略更新（2026-05-15，覆盖优先级）
+
+- 来源：用户提供的 `/Users/lixiang/Desktop/codex_priority_reorder_keep_seq2seq_last.md`。核心判断：`hard_vomega_kinematic` / `soft_vomega_kinematic` 失败只能说明当前“在已有 full-state residual head 上硬接/软接 v/omega kinematic update”的实现失败，不能否定 `Delta v / Delta omega` 父级思想；但 direct finite-horizon seq2seq 更像 sequence forecasting / future-control decoder，不应作为当前论文第一创新点。
+- 新优先级：1) 完成当前 `raw_token_geometric_delta`；2) 若有接近正信号，最多做一次 conservative trainable scope 或短 continuation；3) history-only `dmot/vbat` context branch；4) adaptive history selector / multi-scale reliability gate；5) 将成熟 geometry/context trick 迁移到 `tcnlstm.py`；6) 只有前述方向均无 horizon/test 聚合收益时，才启动完整 true seq2seq `Delta v[1:F] / Delta omega[1:F]` predictor。
+- 论文叙事：优先建立 SO(3)-aware geometric history representation、actuator-aware latent context、自适应历史选择这三个更符合 neural system identification / learned dynamics 的创新点；seq2seq 作为 late-stage future-control decoder extension 或 fallback。
+- Gate 更新：rawtokgeo 是 representation fix，除非 e0/e1 多项关键指标灾难性恶化，否则至少看 e1 或 natural finish；`dmot/vbat` context 要记录字段、past-only、shape、gate/zero-init、leakage 风险和 validation/horizon 结果；adaptive selector 要记录 gate mean/std/saturation；true seq2seq 不能用 e0 直接杀死，至少给 1-2 个完整 validation 周期、独立 LR/warmup 和结构匹配 trainable scope。
+
+## GPT Pro 建议并入路线（2026-05-14）
+
+- 来源：用户提供的 `/Users/lixiang/Desktop/codex_delta_vomega_kinematic_rollout_plan.md`。该建议中的 eval guard、`state_update_mode` 和 raw-token 几何修正已执行/保留；其“优先 Delta v / Delta omega 主预测”的排序已被 2026-05-15 Pro 策略更新覆盖，seq2seq 改为最后 fallback。
+- 最高优先级协议修复：`eval.py` 必须防止 silent skip。若请求 `eval_horizons=1,10,25,50`，则 `unroll_length` 必须至少覆盖 50；summary 要写 `actual_unroll_length`、`requested_eval_horizons`、`computed_eval_horizons`、`skipped_eval_horizons`。若 h50 被跳过，不能作为 locked audit 或 long-horizon 结论。
+- 模型路线：新增默认保持旧行为的 `state_update_mode`，包括 `residual_full_state`、`hard_vomega_kinematic`、`soft_vomega_kinematic`。hard 模式忽略 `delta_p/dtheta`，只学习 `delta_v/delta_omega`，然后用梯形积分恢复 `p`、用 `omega` 梯形积分经 SO(3) exponential 恢复 `q`；soft 模式只在 hard 的 v/omega 有正信号但 p/q 回退时加入小 `delta_p_res/delta_theta_res`，是否保留由 `E_v/E_omega/E_q/MSE_1_to_F` 决定。
+- raw-token 修正：当前 raw-token `dx` 对 quaternion 做欧氏差分，后续应加入 `raw_token_geometric_delta`，用 `Log(q_i^{-1} ⊗ q_{i+1})` 表示姿态增量，并同步替换 `dx_last`，保持输入维度兼容。
+- context 分支排在后面：只有 hard/geometry 路线有信号后再试 `context_hist`，首轮只用历史 `dmot,vbat`，不使用未来 context，不先用 `a/alpha`。
+- 训练策略：smoke 可只训 `multi_step`，正式实验不要长期只训 tiny branch；优先 head-level patterns（`multi_step,raw_token,decoder,correction_gate,context_delta` 等）和更像新结构学习的 LR。若 1-2 个候选不改善 `MSE_1_to_F` 或 h50 `E_v/E_omega`，立即收缩并换结构。
 
 ## Prompt.md 写入规则
 
